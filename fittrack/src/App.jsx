@@ -42,9 +42,51 @@ const FOOD_DB = [
   { name: "Jagung Rebus (1 buah)", cal: 96, protein: 3.4, carb: 21, fat: 1.5 },
 ];
 
-const CALORIE_TARGET = 1500;
-const PROTEIN_TARGET = 80;
+// Default targets (overridden by profile if set)
+const DEFAULT_CALORIE_TARGET = 1500;
+const DEFAULT_PROTEIN_TARGET = 80;
 const WATER_TARGET = 8;
+
+// Workout calorie burn estimates (kkal per sesi)
+const WORKOUT_BURN = {
+  app: 220,       // Full body / Upper / Lower
+  cardio: 280,    // Jogging / Cardio bebas
+  light: 100,     // Istirahat aktif / stretching
+  rest: 0,        // Rest total
+};
+
+// Hitung BMR dengan Mifflin-St Jeor
+function calcBMR(gender, weight, height, age) {
+  if (gender === "pria") return 10 * weight + 6.25 * height - 5 * age + 5;
+  return 10 * weight + 6.25 * height - 5 * age - 161;
+}
+
+// Hitung TDEE
+function calcTDEE(bmr, activity) {
+  const factors = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, veryActive: 1.9 };
+  return bmr * (factors[activity] || 1.375);
+}
+
+// Hitung target kalori berdasarkan tujuan + hari olahraga
+function calcDailyTarget(profile, workoutType) {
+  if (!profile || !profile.weight || !profile.height || !profile.age) return DEFAULT_CALORIE_TARGET;
+  const bmr = calcBMR(profile.gender || "wanita", profile.weight, profile.height, profile.age);
+  const tdee = calcTDEE(bmr, profile.activity || "light");
+  const burn = WORKOUT_BURN[workoutType] || 0;
+  
+  let target = tdee;
+  if (profile.goal === "loss") target = tdee - 400 + burn * 0.5;
+  else if (profile.goal === "gain") target = tdee + 300;
+  else target = tdee; // maintain
+  
+  return Math.round(Math.max(1200, target));
+}
+
+function calcProteinTarget(profile) {
+  if (!profile || !profile.weight) return DEFAULT_PROTEIN_TARGET;
+  const factor = profile.goal === "gain" ? 2.0 : profile.goal === "loss" ? 1.8 : 1.6;
+  return Math.round(profile.weight * factor);
+}
 
 function getDateKey(date) {
   return date.toISOString().split("T")[0];
@@ -66,6 +108,13 @@ export default function HealthTracker() {
   const [customFood, setCustomFood] = useState({ name: "", cal: "", protein: "", carb: "", fat: "" });
   const [showCustom, setShowCustom] = useState(false);
   const [weightInput, setWeightInput] = useState("");
+
+  // === PROFIL & TARGET KALORI ===
+  const [profile, setProfile] = useState(null);
+  const [showProfileSetup, setShowProfileSetup] = useState(false);
+  const [profileDraft, setProfileDraft] = useState({
+    gender: "wanita", weight: "", height: "", age: "", activity: "light", goal: "loss", targetWeight: ""
+  });
 
   // === FITUR SCAN FOTO MAKANAN ===
   const [showPhotoScan, setShowPhotoScan] = useState(false);
@@ -220,8 +269,10 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     try {
       const s = JSON.parse(localStorage.getItem("ht_data") || "{}");
       const w = JSON.parse(localStorage.getItem("ht_weights") || "{}");
+      const p = JSON.parse(localStorage.getItem("ht_profile") || "null");
       setStorage(s);
       setWeights(w);
+      if (p) setProfile(p);
     } catch {}
   }, []);
 
@@ -230,6 +281,9 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
   const todayKey = getDateKey(today);
   const dayOfWeek = selectedDate.getDay();
   const workout = WORKOUT_SCHEDULE[dayOfWeek];
+
+  const CALORIE_TARGET = calcDailyTarget(profile, workout.type);
+  const PROTEIN_TARGET = calcProteinTarget(profile);
 
   const totalCal = dayData.foods.reduce((s, f) => s + f.cal, 0);
   const totalProtein = dayData.foods.reduce((s, f) => s + (f.protein || 0), 0);
@@ -270,6 +324,20 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     addFood({ name: customFood.name, cal: +customFood.cal, protein: +customFood.protein || 0, carb: +customFood.carb || 0, fat: +customFood.fat || 0 });
     setCustomFood({ name: "", cal: "", protein: "", carb: "", fat: "" });
     setShowCustom(false);
+  }
+
+  function saveProfile() {
+    if (!profileDraft.weight || !profileDraft.height || !profileDraft.age) return;
+    const p = {
+      ...profileDraft,
+      weight: parseFloat(profileDraft.weight),
+      height: parseFloat(profileDraft.height),
+      age: parseInt(profileDraft.age),
+      targetWeight: profileDraft.targetWeight ? parseFloat(profileDraft.targetWeight) : null,
+    };
+    setProfile(p);
+    try { localStorage.setItem("ht_profile", JSON.stringify(p)); } catch {}
+    setShowProfileSetup(false);
   }
 
   const filteredFoods = foodSearch ? FOOD_DB.filter(f => f.name.toLowerCase().includes(foodSearch.toLowerCase())) : [];
@@ -348,9 +416,9 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
             </div>
           </div>
           <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 12, scrollbarWidth: "none" }}>
-            {["today","makan","olahraga","progress","jadwal"].map(t => (
+            {["today","makan","olahraga","progress","jadwal","profil"].map(t => (
               <button key={t} className={`tab ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
-                {t === "today" ? "🏠 Hari Ini" : t === "makan" ? "🍽️ Makan" : t === "olahraga" ? "💪 Olahraga" : t === "progress" ? "📊 Progress" : "📅 Jadwal"}
+                {t === "today" ? "🏠 Hari Ini" : t === "makan" ? "🍽️ Makan" : t === "olahraga" ? "💪 Olahraga" : t === "progress" ? "📊 Progress" : t === "jadwal" ? "📅 Jadwal" : "👤 Profil"}
               </button>
             ))}
           </div>
@@ -370,6 +438,34 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
               </div>
               <button className="btn-outline" style={{ padding: "6px 12px" }} onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()+1); if(d <= today) setSelectedDate(d); }}>›</button>
             </div>
+
+            {/* Banner profil belum diset */}
+            {!profile && (
+              <div style={{ background: "#1a1d2e", border: "1px solid #fbbf2444", borderRadius: 12, padding: 12, marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontSize: 22 }}>⚠️</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, color: "#fbbf24" }}>Target kalori belum personal!</div>
+                  <div style={{ fontSize: 11, color: "#888" }}>Atur profil agar target dihitung otomatis sesuai tubuh & olahragamu.</div>
+                </div>
+                <button className="btn-outline" style={{ fontSize: 11, borderColor: "#fbbf24", color: "#fbbf24", whiteSpace: "nowrap" }} onClick={() => setActiveTab("profil")}>Atur →</button>
+              </div>
+            )}
+
+            {/* Info target hari ini (jika profil ada) */}
+            {profile && (
+              <div style={{ background: "#0d1f2d", border: "1px solid #22d3ee33", borderRadius: 12, padding: 10, marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#22d3ee", fontWeight: 800 }}>🎯 TARGET HARI INI (OTOMATIS)</div>
+                    <div style={{ fontSize: 11, color: "#888", marginTop: 1 }}>{workout.icon} {workout.label} • +{WORKOUT_BURN[workout.type]} kkal bakar</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontWeight: 900, fontSize: 20, color: "#4ade80" }}>{CALORIE_TARGET} kkal</div>
+                    <div style={{ fontSize: 11, color: "#22d3ee" }}>Protein: {PROTEIN_TARGET}g</div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <div className="stat-mini">
@@ -985,8 +1081,232 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
           </div>
         )}
 
+        {/* PROFIL TAB */}
+        {activeTab === "profil" && (
+          <div style={{ animation: "fadeIn 0.3s ease" }}>
+
+            {/* Profil Card */}
+            {!profile ? (
+              <div className="card" style={{ textAlign: "center", marginBottom: 12, border: "1px solid #4ade8044" }}>
+                <div style={{ fontSize: 52, marginBottom: 8 }}>👤</div>
+                <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 6 }}>Atur Profil Dulu!</div>
+                <div style={{ fontSize: 13, color: "#888", marginBottom: 16 }}>Masukkan data tubuhmu agar target kalori & protein dihitung otomatis sesuai kondisi & jadwal olahragamu.</div>
+                <button className="btn-green" style={{ width: "100%" }} onClick={() => setShowProfileSetup(true)}>🎯 Atur Profil Sekarang</button>
+              </div>
+            ) : (
+              <>
+                {/* Summary profil */}
+                <div className="card" style={{ marginBottom: 12, border: "1px solid #4ade8044" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div style={{ fontWeight: 900, fontSize: 16 }}>👤 Profilku</div>
+                    <button className="btn-outline" style={{ fontSize: 12 }} onClick={() => { setProfileDraft({ ...profile, weight: profile.weight.toString(), height: profile.height.toString(), age: profile.age.toString(), targetWeight: profile.targetWeight?.toString() || "" }); setShowProfileSetup(true); }}>✏️ Edit</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+                    {[
+                      { label: "Berat", val: profile.weight + " kg", icon: "⚖️" },
+                      { label: "Tinggi", val: profile.height + " cm", icon: "📏" },
+                      { label: "Usia", val: profile.age + " th", icon: "🎂" },
+                    ].map(s => (
+                      <div key={s.label} style={{ background: "#252840", borderRadius: 12, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 20, marginBottom: 2 }}>{s.icon}</div>
+                        <div style={{ fontWeight: 800, fontSize: 14 }}>{s.val}</div>
+                        <div style={{ fontSize: 10, color: "#888" }}>{s.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ flex: 1, background: "#252840", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                      <div style={{ fontSize: 11, color: "#888" }}>Gender</div>
+                      <div style={{ fontWeight: 800 }}>{profile.gender === "pria" ? "👨 Pria" : "👩 Wanita"}</div>
+                    </div>
+                    <div style={{ flex: 1, background: "#252840", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                      <div style={{ fontSize: 11, color: "#888" }}>Aktivitas</div>
+                      <div style={{ fontWeight: 800, fontSize: 12 }}>
+                        {{ sedentary: "Duduk terus", light: "Ringan", moderate: "Sedang", active: "Aktif", veryActive: "Sangat aktif" }[profile.activity]}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1, background: "#252840", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                      <div style={{ fontSize: 11, color: "#888" }}>Tujuan</div>
+                      <div style={{ fontWeight: 800, fontSize: 12 }}>{profile.goal === "loss" ? "⬇️ Turun BB" : profile.goal === "gain" ? "⬆️ Naik BB" : "⚖️ Maintain"}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Kalori per hari olahraga */}
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 12 }}>🔥 Target Kalori per Hari (Otomatis)</div>
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>Target berubah otomatis tiap hari sesuai jadwal olahraga. Hari olahraga berat → kalori sedikit lebih tinggi.</div>
+                  {Object.entries(WORKOUT_SCHEDULE).map(([day, w]) => {
+                    const d = parseInt(day);
+                    const tgt = calcDailyTarget(profile, w.type);
+                    const prot = calcProteinTarget(profile);
+                    const isToday = dayOfWeek === d && dateKey === todayKey;
+                    return (
+                      <div key={day} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: d < 6 ? "1px solid #252840" : "none", background: isToday ? "#1a3a2a22" : "transparent", borderRadius: isToday ? 8 : 0, paddingLeft: isToday ? 8 : 0 }}>
+                        <div style={{ width: 44, fontSize: 11, color: isToday ? "#4ade80" : "#888", fontWeight: isToday ? 800 : 600 }}>{DAYS[d].slice(0,3)}</div>
+                        <div style={{ fontSize: 18 }}>{w.icon}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700 }}>{w.label}</div>
+                          <div style={{ fontSize: 10, color: "#666" }}>+{WORKOUT_BURN[w.type]} kkal bakar</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontWeight: 900, fontSize: 15, color: isToday ? "#4ade80" : "#e8eaf0" }}>{tgt} kkal</div>
+                          <div style={{ fontSize: 10, color: "#22d3ee" }}>{prot}g protein</div>
+                        </div>
+                        {isToday && <span className="badge" style={{ background: "#4ade8033", color: "#4ade80", marginLeft: 2 }}>Hari ini</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* BMR/TDEE Info */}
+                {(() => {
+                  const bmr = Math.round(calcBMR(profile.gender || "wanita", profile.weight, profile.height, profile.age));
+                  const tdee = Math.round(calcTDEE(bmr, profile.activity || "light"));
+                  const bmi = (profile.weight / Math.pow(profile.height / 100, 2)).toFixed(1);
+                  const bmiLabel = bmi < 18.5 ? "Kurus" : bmi < 25 ? "Normal" : bmi < 30 ? "Overweight" : "Obesitas";
+                  const bmiColor = bmi < 18.5 ? "#22d3ee" : bmi < 25 ? "#4ade80" : bmi < 30 ? "#fbbf24" : "#f87171";
+                  return (
+                    <div className="card" style={{ marginBottom: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 12 }}>📊 Data Tubuhku</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                        {[
+                          { label: "BMR", val: bmr + " kkal/hari", desc: "Kalori istirahat total", color: "#a78bfa" },
+                          { label: "TDEE", val: tdee + " kkal/hari", desc: "Kalori harian dgn aktivitas", color: "#22d3ee" },
+                          { label: "BMI", val: bmi, desc: bmiLabel, color: bmiColor },
+                          { label: "Target BB", val: profile.targetWeight ? profile.targetWeight + " kg" : "—", desc: profile.targetWeight ? `Sisa ${Math.abs(profile.weight - profile.targetWeight).toFixed(1)} kg` : "Belum diset", color: "#fbbf24" },
+                        ].map(s => (
+                          <div key={s.label} style={{ background: "#252840", borderRadius: 12, padding: 12 }}>
+                            <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>{s.label}</div>
+                            <div style={{ fontWeight: 900, fontSize: 16, color: s.color }}>{s.val}</div>
+                            <div style={{ fontSize: 10, color: "#666" }}>{s.desc}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background: "#0f1117", borderRadius: 10, padding: 10, fontSize: 12, color: "#888" }}>
+                        💡 <span style={{ color: "#e8eaf0" }}>Cara kerja:</span> Target kalorimu dihitung dari BMR × faktor aktivitas ± tujuan ± kalori bakar olahraga hari itu.
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+
+            {/* MODAL: Profile Setup */}
+            {showProfileSetup && (
+              <div style={{ position: "fixed", inset: 0, background: "#000000cc", zIndex: 999, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                <div style={{ background: "#1a1d2e", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 480, padding: 20, maxHeight: "92vh", overflowY: "auto", animation: "fadeIn 0.3s ease" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                    <div style={{ fontWeight: 900, fontSize: 17, background: "linear-gradient(135deg, #4ade80, #22d3ee)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      👤 Atur Profil
+                    </div>
+                    <button onClick={() => setShowProfileSetup(false)} style={{ background: "none", border: "none", color: "#888", fontSize: 22, cursor: "pointer" }}>×</button>
+                  </div>
+
+                  {/* Gender */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#aaa", marginBottom: 8 }}>Gender</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {[["pria", "👨 Pria"], ["wanita", "👩 Wanita"]].map(([val, label]) => (
+                        <button key={val} onClick={() => setProfileDraft(d => ({ ...d, gender: val }))}
+                          style={{ flex: 1, padding: 10, borderRadius: 10, border: `1.5px solid ${profileDraft.gender === val ? "#4ade80" : "#333660"}`, background: profileDraft.gender === val ? "#1a3a2a" : "#252840", color: profileDraft.gender === val ? "#4ade80" : "#aaa", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* BB, TB, Usia */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+                    {[
+                      { key: "weight", label: "Berat (kg)", placeholder: "mis. 65" },
+                      { key: "height", label: "Tinggi (cm)", placeholder: "mis. 160" },
+                      { key: "age", label: "Usia (thn)", placeholder: "mis. 20" },
+                    ].map(f => (
+                      <div key={f.key}>
+                        <div style={{ fontSize: 11, color: "#aaa", marginBottom: 4 }}>{f.label}</div>
+                        <input className="input-dark" type="number" placeholder={f.placeholder} value={profileDraft[f.key]}
+                          onChange={e => setProfileDraft(d => ({ ...d, [f.key]: e.target.value }))} />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Target berat */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#aaa", marginBottom: 6 }}>Target Berat Badan (opsional)</div>
+                    <input className="input-dark" type="number" placeholder="mis. 57 kg" value={profileDraft.targetWeight}
+                      onChange={e => setProfileDraft(d => ({ ...d, targetWeight: e.target.value }))} />
+                  </div>
+
+                  {/* Tujuan */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#aaa", marginBottom: 8 }}>Tujuan</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[["loss", "⬇️ Turun BB"], ["maintain", "⚖️ Maintain"], ["gain", "⬆️ Naik BB"]].map(([val, label]) => (
+                        <button key={val} onClick={() => setProfileDraft(d => ({ ...d, goal: val }))}
+                          style={{ flex: 1, padding: 8, borderRadius: 10, border: `1.5px solid ${profileDraft.goal === val ? "#4ade80" : "#333660"}`, background: profileDraft.goal === val ? "#1a3a2a" : "#252840", color: profileDraft.goal === val ? "#4ade80" : "#aaa", fontWeight: 700, cursor: "pointer", fontSize: 11 }}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Tingkat aktivitas */}
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#aaa", marginBottom: 8 }}>Tingkat Aktivitas Sehari-hari</div>
+                    {[
+                      ["sedentary", "🪑 Duduk terus", "Kerja kantor, jarang gerak"],
+                      ["light", "🚶 Ringan", "Jalan kaki 1-3x/minggu"],
+                      ["moderate", "🏃 Sedang", "Olahraga 3-5x/minggu"],
+                      ["active", "💪 Aktif", "Latihan berat 6-7x/minggu"],
+                      ["veryActive", "🔥 Sangat Aktif", "Atlet / kerja fisik berat"],
+                    ].map(([val, label, desc]) => (
+                      <div key={val} onClick={() => setProfileDraft(d => ({ ...d, activity: val }))}
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, marginBottom: 6, border: `1.5px solid ${profileDraft.activity === val ? "#4ade80" : "#333660"}`, background: profileDraft.activity === val ? "#1a3a2a" : "#252840", cursor: "pointer" }}>
+                        <div style={{ fontSize: 18 }}>{label.split(" ")[0]}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: profileDraft.activity === val ? "#4ade80" : "#e8eaf0" }}>{label.split(" ").slice(1).join(" ")}</div>
+                          <div style={{ fontSize: 11, color: "#666" }}>{desc}</div>
+                        </div>
+                        {profileDraft.activity === val && <div style={{ color: "#4ade80", fontSize: 18 }}>✓</div>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Preview target */}
+                  {profileDraft.weight && profileDraft.height && profileDraft.age && (
+                    <div style={{ background: "#0f1117", borderRadius: 12, padding: 12, marginBottom: 14, border: "1px solid #4ade8044" }}>
+                      <div style={{ fontWeight: 800, fontSize: 12, color: "#4ade80", marginBottom: 8 }}>🎯 Preview Target Kalorimu</div>
+                      {(() => {
+                        const draft = { ...profileDraft, weight: parseFloat(profileDraft.weight), height: parseFloat(profileDraft.height), age: parseInt(profileDraft.age) };
+                        return (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {Object.entries(WORKOUT_SCHEDULE).map(([day, w]) => (
+                              <div key={day} style={{ background: "#252840", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                                <div style={{ fontSize: 10, color: "#888" }}>{DAYS[parseInt(day)].slice(0,3)}</div>
+                                <div style={{ fontWeight: 900, fontSize: 13, color: "#4ade80" }}>{calcDailyTarget(draft, w.type)}</div>
+                                <div style={{ fontSize: 9, color: "#555" }}>kkal</div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  <button className="btn-green" style={{ width: "100%" }}
+                    disabled={!profileDraft.weight || !profileDraft.height || !profileDraft.age}
+                    onClick={saveProfile}>
+                    💾 Simpan Profil
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{ textAlign: "center", padding: "16px 0", fontSize: 11, color: "#444" }}>
-          FitTrack v1.0 • Data tersimpan lokal 💚
+          FitTrack v2.0 • Data tersimpan lokal 💚
         </div>
       </div>
     </div>
