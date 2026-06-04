@@ -76,15 +76,17 @@ export default function HealthTracker() {
   const [scanQuestions, setScanQuestions] = useState([]); // array of {question, options, key}
   const [scanAnswers, setScanAnswers] = useState({});
   const [scanStep, setScanStep] = useState("upload"); // upload | loading | result | questions | confirm
+  const [scanMediaType, setScanMediaType] = useState("image/jpeg");
 
   function handleImageUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+    const mt = file.type || "image/jpeg";
+    setScanMediaType(mt);
     const reader = new FileReader();
     reader.onload = (ev) => {
       const base64Full = ev.target.result;
       setScanImagePreview(base64Full);
-      // strip header for API
       setScanImage(base64Full.split(",")[1]);
       setScanStep("preview");
     };
@@ -146,28 +148,34 @@ PENTING:
 - Minyak goreng menambah ~45 kkal per 5ml
 - Selalu pertimbangkan metode masak dalam kalkulasi`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: "image/jpeg", data: scanImage }
-              },
-              { type: "text", text: prompt }
-            ]
-          }]
-        })
-      });
+      const apiKey = import.meta.env.VITE_GEMINI_KEY;
+      if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inline_data: { mime_type: scanMediaType || "image/jpeg", data: scanImage } },
+                { text: prompt }
+              ]
+            }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
+          })
+        }
+      );
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err?.error?.message || `HTTP ${response.status}`);
+      }
       const data = await response.json();
-      const text = data.content?.map(b => b.text || "").join("") || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
 
       setScanResult(parsed);
       if (parsed.needsQuestions && parsed.questions?.length > 0) {
@@ -178,7 +186,7 @@ PENTING:
         setScanStep("result");
       }
     } catch (err) {
-      setScanResult({ error: true, message: "Gagal menganalisis gambar. Pastikan koneksi internet aktif dan coba lagi." });
+      setScanResult({ error: true, message: `Analisis gagal: ${err.message}` });
       setScanStep("result");
     }
     setScanLoading(false);
@@ -212,28 +220,38 @@ Berikan response HANYA dalam format JSON:
   "questions": []
 }`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 800,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: scanImage } },
-              { type: "text", text: prompt }
-            ]
-          }]
-        })
-      });
+      const apiKey = import.meta.env.VITE_GEMINI_KEY;
+      if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inline_data: { mime_type: scanMediaType || "image/jpeg", data: scanImage } },
+                { text: prompt }
+              ]
+            }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 800 }
+          })
+        }
+      );
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err?.error?.message || `HTTP ${response.status}`);
+      }
       const data = await response.json();
-      const text = data.content?.map(b => b.text || "").join("") || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
       setScanResult(parsed);
       setScanStep("result");
-    } catch {
+    } catch (err) {
+      setScanResult({ error: true, message: `Analisis gagal: ${err.message}` });
       setScanStep("result");
     }
     setScanLoading(false);
