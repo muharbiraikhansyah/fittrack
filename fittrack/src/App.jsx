@@ -77,6 +77,7 @@ export default function HealthTracker() {
   const [scanAnswers, setScanAnswers] = useState({});
   const [scanStep, setScanStep] = useState("upload"); // upload | loading | result | questions | confirm
   const [scanMediaType, setScanMediaType] = useState("image/jpeg");
+  const [scanPortions, setScanPortions] = useState(1);
 
   function handleImageUpload(e) {
     const file = e.target.files[0];
@@ -91,6 +92,44 @@ export default function HealthTracker() {
       setScanStep("preview");
     };
     reader.readAsDataURL(file);
+  }
+
+  async function callGemini(prompt, maxTokens = 3000) {
+    const apiKey = import.meta.env.VITE_GEMINI_KEY;
+    if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [
+              { inline_data: { mime_type: scanMediaType || "image/jpeg", data: scanImage } },
+              { text: prompt }
+            ]}],
+            generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens, responseMimeType: "application/json" }
+          })
+        }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("AI tidak mengembalikan format yang benar, coba lagi");
+        return JSON.parse(jsonMatch[0]);
+      }
+      const err = await response.json();
+      const msg = err?.error?.message || `HTTP ${response.status}`;
+      const isServerBusy = response.status === 503 || msg.toLowerCase().includes("high demand") || msg.toLowerCase().includes("overloaded");
+      if (isServerBusy && attempt < maxRetries) {
+        // Tunggu makin lama tiap percobaan: 3s, 6s, 9s
+        await new Promise(r => setTimeout(r, attempt * 3000));
+        continue;
+      }
+      throw new Error(msg);
+    }
   }
 
   async function analyzeFood() {
@@ -110,40 +149,7 @@ Jika makanan tidak jelas, set needsQuestions:true dan isi questions seperti:
 
 Gunakan data gizi standar Indonesia. Balas JSON saja, mulai dari { dan akhiri dengan }.`;
 
-      const apiKey = import.meta.env.VITE_GEMINI_KEY;
-      if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { inline_data: { mime_type: scanMediaType || "image/jpeg", data: scanImage } },
-                { text: prompt }
-              ]
-            }],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 3000,
-              responseMimeType: "application/json"
-            }
-          })
-        }
-      );
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err?.error?.message || `HTTP ${response.status}`);
-      }
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      // Bersihkan semua kemungkinan teks sebelum/sesudah JSON
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("AI tidak mengembalikan format yang benar, coba lagi");
-      const parsed = JSON.parse(jsonMatch[0]);
-
+      const parsed = await callGemini(prompt, 3000);
       setScanResult(parsed);
       if (parsed.needsQuestions && parsed.questions?.length > 0) {
         setScanQuestions(parsed.questions);
@@ -171,38 +177,7 @@ ${answersText}
 INSTRUKSI: Balas HANYA dengan JSON murni, mulai dari { dan akhiri dengan }, tidak ada teks lain.
 Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstimate":"250g","cal":350,"protein":12.0,"carb":48.0,"fat":9.0,"breakdown":[],"needsQuestions":false,"questions":[]}`;
 
-      const apiKey = import.meta.env.VITE_GEMINI_KEY;
-      if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { inline_data: { mime_type: scanMediaType || "image/jpeg", data: scanImage } },
-                { text: prompt }
-              ]
-            }],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 2000,
-              responseMimeType: "application/json"
-            }
-          })
-        }
-      );
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err?.error?.message || `HTTP ${response.status}`);
-      }
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("AI tidak mengembalikan format yang benar, coba lagi");
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = await callGemini(prompt, 2000);
       setScanResult(parsed);
       setScanStep("result");
     } catch (err) {
@@ -215,11 +190,11 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
   function confirmScanFood() {
     if (!scanResult || scanResult.error) return;
     addFood({
-      name: scanResult.foodName,
-      cal: Math.round(scanResult.cal),
-      protein: parseFloat((scanResult.protein || 0).toFixed(1)),
-      carb: parseFloat((scanResult.carb || 0).toFixed(1)),
-      fat: parseFloat((scanResult.fat || 0).toFixed(1)),
+      name: scanPortions !== 1 ? `${scanResult.foodName} (${scanPortions}x)` : scanResult.foodName,
+      cal: Math.round(scanResult.cal * scanPortions),
+      protein: parseFloat((scanResult.protein * scanPortions).toFixed(1)),
+      carb: parseFloat((scanResult.carb * scanPortions).toFixed(1)),
+      fat: parseFloat((scanResult.fat * scanPortions).toFixed(1)),
     });
     setShowPhotoScan(false);
     setScanStep("upload");
@@ -228,6 +203,7 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     setScanResult(null);
     setScanQuestions([]);
     setScanAnswers({});
+    setScanPortions(1);
   }
 
   function resetScan() {
@@ -237,6 +213,7 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     setScanResult(null);
     setScanQuestions([]);
     setScanAnswers({});
+    setScanPortions(1);
   }
 
   useEffect(() => {
@@ -540,7 +517,7 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
                         <div>✦ Mengidentifikasi jenis makanan...</div>
                         <div>✦ Mengestimasi porsi & berat...</div>
                         <div>✦ Menghitung kalori & makronutrien...</div>
-                        <div>✦ Cross-check dengan database gizi...</div>
+                        <div>✦ Jika server sibuk, otomatis coba ulang (maks 3x)...</div>
                       </div>
                     </div>
                   )}
@@ -628,6 +605,36 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
                           ⚠️ Kepercayaan AI {scanResult.confidence}% — Nilai gizi mungkin tidak 100% akurat. Kamu bisa edit setelah ditambahkan.
                         </div>
                       )}
+
+                      {/* PENGATUR PORSI */}
+                      <div style={{ background: "#252840", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "#aaa", marginBottom: 8 }}>🍽️ Berapa porsi yang dimakan?</div>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16 }}>
+                          <button onClick={() => setScanPortions(p => Math.max(0.5, parseFloat((p - 0.5).toFixed(1))))}
+                            style={{ width: 36, height: 36, borderRadius: 99, border: "2px solid #4ade80", background: "none", color: "#4ade80", fontSize: 20, fontWeight: 900, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
+                          <div style={{ textAlign: "center" }}>
+                            <div style={{ fontWeight: 900, fontSize: 28, color: "#4ade80" }}>{scanPortions}</div>
+                            <div style={{ fontSize: 10, color: "#666" }}>porsi</div>
+                          </div>
+                          <button onClick={() => setScanPortions(p => parseFloat((p + 0.5).toFixed(1)))}
+                            style={{ width: 36, height: 36, borderRadius: 99, border: "2px solid #4ade80", background: "none", color: "#4ade80", fontSize: 20, fontWeight: 900, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                        </div>
+                        {scanPortions !== 1 && (
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginTop: 10 }}>
+                            {[
+                              { label: "Kalori", val: Math.round(scanResult.cal * scanPortions), color: "#4ade80" },
+                              { label: "Protein", val: (scanResult.protein * scanPortions).toFixed(1) + "g", color: "#22d3ee" },
+                              { label: "Karbo", val: (scanResult.carb * scanPortions).toFixed(1) + "g", color: "#fbbf24" },
+                              { label: "Lemak", val: (scanResult.fat * scanPortions).toFixed(1) + "g", color: "#f87171" },
+                            ].map(m => (
+                              <div key={m.label} style={{ background: "#0f1117", borderRadius: 8, padding: 6, textAlign: "center" }}>
+                                <div style={{ fontWeight: 900, fontSize: 13, color: m.color }}>{m.val}</div>
+                                <div style={{ fontSize: 9, color: "#666" }}>{m.label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
 
                       <div style={{ display: "flex", gap: 8 }}>
                         <button className="btn-outline" style={{ flex: 1, fontSize: 12 }} onClick={resetScan}>🔄 Scan Ulang</button>
