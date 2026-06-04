@@ -163,7 +163,7 @@ PENTING:
                 { text: prompt }
               ]
             }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
+            generationConfig: { temperature: 0.1, maxOutputTokens: 3000 }
           })
         }
       );
@@ -175,10 +175,17 @@ PENTING:
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
       const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
       const jsonMatch = clean.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
-
-      setScanResult(parsed);
-      if (parsed.needsQuestions && parsed.questions?.length > 0) {
+      const rawJson = jsonMatch ? jsonMatch[0] : clean;
+      // Perbaiki JSON yang terpotong dengan menambah kurung tutup jika kurang
+      let fixedJson = rawJson;
+      try { JSON.parse(fixedJson); } catch {
+        // Coba tutup string dan object yang terbuka
+        const opens = (fixedJson.match(/\{/g) || []).length;
+        const closes = (fixedJson.match(/\}/g) || []).length;
+        if (fixedJson.endsWith(",")) fixedJson = fixedJson.slice(0, -1);
+        for (let i = 0; i < opens - closes; i++) fixedJson += "}";
+      }
+      const parsed = JSON.parse(fixedJson);
         setScanQuestions(parsed.questions);
         setScanAnswers({});
         setScanStep("questions");
@@ -235,7 +242,7 @@ Berikan response HANYA dalam format JSON:
                 { text: prompt }
               ]
             }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 800 }
+            generationConfig: { temperature: 0.1, maxOutputTokens: 2000 }
           })
         }
       );
@@ -247,8 +254,15 @@ Berikan response HANYA dalam format JSON:
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
       const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
       const jsonMatch = clean.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
-      setScanResult(parsed);
+      const rawJson = jsonMatch ? jsonMatch[0] : clean;
+      let fixedJson = rawJson;
+      try { JSON.parse(fixedJson); } catch {
+        if (fixedJson.endsWith(",")) fixedJson = fixedJson.slice(0, -1);
+        const opens = (fixedJson.match(/\{/g) || []).length;
+        const closes = (fixedJson.match(/\}/g) || []).length;
+        for (let i = 0; i < opens - closes; i++) fixedJson += "}";
+      }
+      const parsed = JSON.parse(fixedJson);
       setScanStep("result");
     } catch (err) {
       setScanResult({ error: true, message: `Analisis gagal: ${err.message}` });
