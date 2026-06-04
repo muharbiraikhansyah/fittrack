@@ -98,55 +98,17 @@ export default function HealthTracker() {
     setScanStep("loading");
     setScanLoading(true);
     try {
-      const prompt = `Kamu adalah ahli gizi dan food analyst profesional. Analisis gambar makanan ini dengan sangat teliti dan akurat.
+      const prompt = `Kamu adalah ahli gizi profesional. Analisis foto makanan ini.
 
-Tugas kamu:
-1. Identifikasi SEMUA makanan/minuman yang terlihat dalam gambar
-2. Estimasi berat/porsi berdasarkan visual (ukuran piring, gelas, dll)
-3. Hitung nilai gizi total secara AKURAT
+INSTRUKSI: Balas HANYA dengan JSON murni, tidak ada teks lain, tidak ada markdown, tidak ada penjelasan.
 
-Berikan response HANYA dalam format JSON berikut (tanpa markdown, tanpa penjelasan lain):
-{
-  "detected": true,
-  "confidence": 95,
-  "foodName": "Nama makanan lengkap (misal: Nasi Goreng Telur Porsi Sedang)",
-  "description": "Deskripsi singkat apa yang terlihat",
-  "portionEstimate": "estimasi porsi (misal: 250g, 1 piring sedang)",
-  "cal": 450,
-  "protein": 15.5,
-  "carb": 65.0,
-  "fat": 12.0,
-  "breakdown": [
-    {"item": "Nasi goreng", "weight": "200g", "cal": 320, "protein": 8, "carb": 58, "fat": 8},
-    {"item": "Telur dadar", "weight": "50g", "cal": 80, "protein": 6, "carb": 0.5, "fat": 6}
-  ],
-  "needsQuestions": false,
-  "questions": []
-}
+Format JSON yang harus dikembalikan:
+{"detected":true,"confidence":90,"foodName":"nama makanan","description":"deskripsi singkat","portionEstimate":"250g","cal":400,"protein":15.0,"carb":55.0,"fat":12.0,"breakdown":[{"item":"nama bahan","weight":"100g","cal":200,"protein":8,"carb":30,"fat":5}],"needsQuestions":false,"questions":[]}
 
-Jika makanan TIDAK dapat teridentifikasi dengan baik (gambar blur, tidak jelas, atau makanan sangat unik), set:
-- "detected": false atau confidence < 70
-- "needsQuestions": true
-- "questions": array pertanyaan untuk membantu estimasi, contoh:
-  [
-    {
-      "key": "size",
-      "question": "Seberapa besar porsinya?",
-      "options": ["Kecil (150g)", "Sedang (250g)", "Besar (400g)"]
-    },
-    {
-      "key": "cooking",
-      "question": "Bagaimana cara memasaknya?",
-      "options": ["Direbus/dikukus", "Ditumis sedikit minyak", "Digoreng"]
-    }
-  ]
+Jika makanan tidak jelas, set needsQuestions:true dan isi questions seperti:
+{"detected":false,"confidence":50,"foodName":"Tidak terdeteksi","description":"gambar tidak jelas","portionEstimate":"","cal":0,"protein":0,"carb":0,"fat":0,"breakdown":[],"needsQuestions":true,"questions":[{"key":"size","question":"Seberapa besar porsinya?","options":["Kecil 150g","Sedang 250g","Besar 400g"]},{"key":"cooking","question":"Cara memasak?","options":["Direbus","Ditumis","Digoreng"]}]}
 
-PENTING: 
-- Semua angka harus REALISTIS berdasarkan data gizi standar Indonesia
-- Gunakan database gizi USDA dan data makanan Indonesia sebagai referensi
-- Jika ada nasi, 1 centong = sekitar 100-120g = 130-156 kkal
-- Minyak goreng menambah ~45 kkal per 5ml
-- Selalu pertimbangkan metode masak dalam kalkulasi`;
+Gunakan data gizi standar Indonesia. Balas JSON saja, mulai dari { dan akhiri dengan }.`;
 
       const apiKey = import.meta.env.VITE_GEMINI_KEY;
       if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
@@ -163,7 +125,11 @@ PENTING:
                 { text: prompt }
               ]
             }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 3000 }
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 3000,
+              responseMimeType: "application/json"
+            }
           })
         }
       );
@@ -173,19 +139,13 @@ PENTING:
       }
       const data = await response.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
-      const jsonMatch = clean.match(/\{[\s\S]*\}/);
-      const rawJson = jsonMatch ? jsonMatch[0] : clean;
-      // Perbaiki JSON yang terpotong dengan menambah kurung tutup jika kurang
-      let fixedJson = rawJson;
-      try { JSON.parse(fixedJson); } catch {
-        // Coba tutup string dan object yang terbuka
-        const opens = (fixedJson.match(/\{/g) || []).length;
-        const closes = (fixedJson.match(/\}/g) || []).length;
-        if (fixedJson.endsWith(",")) fixedJson = fixedJson.slice(0, -1);
-        for (let i = 0; i < opens - closes; i++) fixedJson += "}";
-      }
-      const parsed = JSON.parse(fixedJson);
+      // Bersihkan semua kemungkinan teks sebelum/sesudah JSON
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI tidak mengembalikan format yang benar, coba lagi");
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      setScanResult(parsed);
+      if (parsed.needsQuestions && parsed.questions?.length > 0) {
         setScanQuestions(parsed.questions);
         setScanAnswers({});
         setScanStep("questions");
@@ -205,27 +165,11 @@ PENTING:
     setScanLoading(true);
     try {
       const answersText = scanQuestions.map(q => `${q.question}: ${scanAnswers[q.key] || "tidak dijawab"}`).join("\n");
-      const prompt = `Kamu adalah ahli gizi profesional. Seseorang mengunggah foto makanan dan menjawab beberapa pertanyaan untuk membantu identifikasi.
-
-Jawaban dari pengguna:
+      const prompt = `Kamu adalah ahli gizi profesional. Hitung nilai gizi makanan berdasarkan jawaban berikut:
 ${answersText}
 
-Berdasarkan jawaban ini dan foto yang sama, hitung nilai gizi secara akurat.
-
-Berikan response HANYA dalam format JSON:
-{
-  "detected": true,
-  "confidence": 85,
-  "foodName": "nama makanan berdasarkan jawaban",
-  "portionEstimate": "estimasi porsi",
-  "cal": 350,
-  "protein": 12.0,
-  "carb": 48.0,
-  "fat": 9.0,
-  "breakdown": [],
-  "needsQuestions": false,
-  "questions": []
-}`;
+INSTRUKSI: Balas HANYA dengan JSON murni, mulai dari { dan akhiri dengan }, tidak ada teks lain.
+Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstimate":"250g","cal":350,"protein":12.0,"carb":48.0,"fat":9.0,"breakdown":[],"needsQuestions":false,"questions":[]}`;
 
       const apiKey = import.meta.env.VITE_GEMINI_KEY;
       if (!apiKey) throw new Error("API key Gemini belum diset di file .env");
@@ -242,7 +186,11 @@ Berikan response HANYA dalam format JSON:
                 { text: prompt }
               ]
             }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 2000 }
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 2000,
+              responseMimeType: "application/json"
+            }
           })
         }
       );
@@ -252,17 +200,10 @@ Berikan response HANYA dalam format JSON:
       }
       const data = await response.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      const clean = text.replace(/```json[\s\S]*?```|```/g, "").trim();
-      const jsonMatch = clean.match(/\{[\s\S]*\}/);
-      const rawJson = jsonMatch ? jsonMatch[0] : clean;
-      let fixedJson = rawJson;
-      try { JSON.parse(fixedJson); } catch {
-        if (fixedJson.endsWith(",")) fixedJson = fixedJson.slice(0, -1);
-        const opens = (fixedJson.match(/\{/g) || []).length;
-        const closes = (fixedJson.match(/\}/g) || []).length;
-        for (let i = 0; i < opens - closes; i++) fixedJson += "}";
-      }
-      const parsed = JSON.parse(fixedJson);
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI tidak mengembalikan format yang benar, coba lagi");
+      const parsed = JSON.parse(jsonMatch[0]);
+      setScanResult(parsed);
       setScanStep("result");
     } catch (err) {
       setScanResult({ error: true, message: `Analisis gagal: ${err.message}` });
