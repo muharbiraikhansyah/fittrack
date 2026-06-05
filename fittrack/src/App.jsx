@@ -133,8 +133,33 @@ export default function HealthTracker() {
   const [showScanHistory, setShowScanHistory] = useState(false);
 
   // === WORKOUT KALORI BAKAR ===
-  const [workoutSubTab, setWorkoutSubTab] = useState("hari"); // hari | kalori | panduan
+  const [workoutSubTab, setWorkoutSubTab] = useState("hari"); // hari | kalori | panduan | ai
   const [workoutCalBurned, setWorkoutCalBurned] = useState(0); // kkal bakar manual input
+
+  // === AI REKOMENDASI MAKANAN ===
+  const [showFoodRec, setShowFoodRec] = useState(false);
+  const [foodRecQuery, setFoodRecQuery] = useState("");
+  const [foodRecLoading, setFoodRecLoading] = useState(false);
+  const [foodRecResult, setFoodRecResult] = useState(null);
+  const [foodRecSuggestions] = useState([
+    "Rekomendasikan makanan 10ribu dengan protein 20g",
+    "Makanan tinggi protein rendah lemak untuk sarapan",
+    "Cemilan sehat di bawah 200 kalori",
+    "Menu makan siang 15ribu dengan karbohidrat 50g",
+    "Makanan untuk bulking dengan protein 30g per porsi",
+  ]);
+
+  // === AI REKOMENDASI OLAHRAGA ===
+  const [workoutRecQuery, setWorkoutRecQuery] = useState("");
+  const [workoutRecLoading, setWorkoutRecLoading] = useState(false);
+  const [workoutRecResult, setWorkoutRecResult] = useState(null);
+  const [workoutRecSuggestions] = useState([
+    "Gerakan yang membakar 300 kalori paling cepat",
+    "Olahraga terbaik untuk membakar lemak perut",
+    "Latihan untuk menambah massa otot kaki",
+    "Program 20 menit untuk pemula tanpa alat",
+    "Gerakan HIIT yang bisa dilakukan di kamar",
+  ]);
 
   function handleImageUpload(e) {
     const file = e.target.files[0];
@@ -292,6 +317,117 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     setScanQuestions([]);
     setScanAnswers({});
     setScanPortions(1);
+  }
+
+  async function callClaudeText(systemPrompt, userMessage, maxTokens = 2000) {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMessage }],
+      }),
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err?.error?.message || `HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    const text = data.content.map(b => b.text || "").join("");
+    const clean = text.replace(/```json|```/g, "").trim();
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Format respons tidak valid");
+    return JSON.parse(jsonMatch[0]);
+  }
+
+  async function getAIFoodRec() {
+    if (!foodRecQuery.trim()) return;
+    setFoodRecLoading(true);
+    setFoodRecResult(null);
+    try {
+      const profileCtx = profile
+        ? `Profil pengguna: ${profile.gender}, berat ${profile.weight}kg, tinggi ${profile.height}cm, usia ${profile.age} tahun, tujuan: ${profile.goal === "loss" ? "turun berat badan" : profile.goal === "gain" ? "naik berat badan" : "maintain"}, target kalori harian: ${CALORIE_TARGET} kkal, target protein: ${PROTEIN_TARGET}g.`
+        : "Profil belum diisi.";
+
+      const result = await callClaudeText(
+        `Kamu adalah ahli gizi dan pakar makanan Indonesia. Berikan rekomendasi makanan yang SPESIFIK, REALISTIS, dan sesuai untuk Indonesia.
+${profileCtx}
+Balas HANYA JSON murni tanpa teks lain. Format:
+{
+  "summary": "ringkasan 1 kalimat",
+  "recommendations": [
+    {
+      "name": "nama makanan/menu",
+      "description": "deskripsi singkat cara penyajian",
+      "price_estimate": "estimasi harga mis. Rp 8.000-12.000",
+      "where_to_get": "warung/pasar/supermarket/buat sendiri",
+      "cal": 350,
+      "protein": 18.5,
+      "carb": 40,
+      "fat": 8,
+      "why": "alasan kenapa cocok untuk permintaan ini",
+      "tips": "tips praktis 1 kalimat"
+    }
+  ],
+  "additional_tips": "saran tambahan 1-2 kalimat",
+  "warning": "peringatan jika ada (kosong string jika tidak ada)"
+}
+Berikan 3-5 rekomendasi yang beragam. Gunakan data gizi standar Indonesia yang akurat.`,
+        `Permintaan pengguna: ${foodRecQuery}`
+      );
+      setFoodRecResult(result);
+    } catch (err) {
+      setFoodRecResult({ error: true, message: err.message });
+    }
+    setFoodRecLoading(false);
+  }
+
+  async function getAIWorkoutRec() {
+    if (!workoutRecQuery.trim()) return;
+    setWorkoutRecLoading(true);
+    setWorkoutRecResult(null);
+    try {
+      const profileCtx = profile
+        ? `Profil: ${profile.gender}, berat ${profile.weight}kg, tinggi ${profile.height}cm, usia ${profile.age} tahun, tujuan: ${profile.goal === "loss" ? "turun berat badan" : profile.goal === "gain" ? "naik berat badan" : "maintain"}.`
+        : "Profil belum diisi, asumsikan orang dewasa umum.";
+
+      const result = await callClaudeText(
+        `Kamu adalah pelatih kebugaran profesional berpengalaman. Berikan rekomendasi olahraga/gerakan yang SPESIFIK, AMAN, dan REALISTIS untuk pemula-menengah tanpa alat khusus.
+${profileCtx}
+Balas HANYA JSON murni tanpa teks lain. Format:
+{
+  "summary": "ringkasan program 1 kalimat",
+  "total_cal_burn": 280,
+  "total_duration_minutes": 30,
+  "difficulty": "Pemula/Menengah/Lanjutan",
+  "exercises": [
+    {
+      "name": "nama gerakan",
+      "icon": "emoji relevan",
+      "sets": "mis. 3 set × 15 rep",
+      "duration_seconds": 60,
+      "cal_burn": 45,
+      "fat_burn_g": 1.2,
+      "muscle_target": "otot yang dilatih",
+      "technique": "teknik singkat 1 kalimat",
+      "beginner_mod": "modifikasi untuk pemula jika ada"
+    }
+  ],
+  "schedule_suggestion": "saran jadwal seminggu",
+  "recovery_tips": "tips pemulihan",
+  "nutrition_tips": "tips nutrisi pendukung",
+  "warning": "peringatan keamanan penting"
+}
+Berikan 4-6 gerakan. Estimasi kalori bakar berdasarkan berat badan ${profile?.weight || 65}kg.`,
+        `Permintaan pengguna: ${workoutRecQuery}`
+      );
+      setWorkoutRecResult(result);
+    } catch (err) {
+      setWorkoutRecResult({ error: true, message: err.message });
+    }
+    setWorkoutRecLoading(false);
   }
 
   useEffect(() => {
@@ -594,6 +730,141 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
         {activeTab === "makan" && (
           <div style={{ animation: "fadeIn 0.3s ease" }}>
 
+            {/* ===== AI FOOD RECOMMENDATION MODAL ===== */}
+            {showFoodRec && (
+              <div style={{ position: "fixed", inset: 0, background: "#000000cc", zIndex: 999, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                <div style={{ background: "#1a1d2e", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 480, padding: 20, maxHeight: "92vh", overflowY: "auto", animation: "fadeIn 0.3s ease" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                    <div style={{ fontWeight: 900, fontSize: 17, background: "linear-gradient(135deg, #a78bfa, #22d3ee)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      🤖 Rekomendasi Makanan AI
+                    </div>
+                    <button onClick={() => { setShowFoodRec(false); setFoodRecResult(null); setFoodRecQuery(""); }} style={{ background: "none", border: "none", color: "#888", fontSize: 22, cursor: "pointer" }}>×</button>
+                  </div>
+
+                  {/* Info profil */}
+                  {profile && (
+                    <div style={{ background: "#0d1f2d", borderRadius: 10, padding: 8, marginBottom: 12, fontSize: 11, color: "#22d3ee" }}>
+                      🎯 Target hari ini: <b>{CALORIE_TARGET} kkal</b> • Protein: <b>{PROTEIN_TARGET}g</b> • Tujuan: <b>{profile.goal === "loss" ? "Turun BB" : profile.goal === "gain" ? "Naik BB" : "Maintain"}</b>
+                    </div>
+                  )}
+
+                  <textarea
+                    className="input-dark"
+                    placeholder="Contoh: 'Rekomendasikan makanan 10ribu dengan protein 20g' atau 'Sarapan tinggi protein rendah lemak'"
+                    value={foodRecQuery}
+                    onChange={e => setFoodRecQuery(e.target.value)}
+                    rows={3}
+                    style={{ resize: "none", marginBottom: 8, fontSize: 13 }}
+                  />
+
+                  {/* Quick suggestions */}
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>💡 Contoh permintaan:</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {foodRecSuggestions.map((s, i) => (
+                        <button key={i} onClick={() => setFoodRecQuery(s)}
+                          style={{ padding: "5px 10px", borderRadius: 99, border: "1px solid #a78bfa44", background: "#1a0d2e", color: "#a78bfa", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "'Nunito', sans-serif" }}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={getAIFoodRec}
+                    disabled={!foodRecQuery.trim() || foodRecLoading}
+                    style={{ width: "100%", padding: "11px", borderRadius: 10, border: "none", background: foodRecQuery.trim() && !foodRecLoading ? "linear-gradient(135deg,#a78bfa,#22d3ee)" : "#252840", color: foodRecQuery.trim() && !foodRecLoading ? "#0f1117" : "#555", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: foodRecQuery.trim() && !foodRecLoading ? "pointer" : "not-allowed", fontSize: 14, marginBottom: 14 }}>
+                    {foodRecLoading ? "⏳ AI sedang mencari makanan terbaik..." : "🔍 Cari Rekomendasi Makanan"}
+                  </button>
+
+                  {/* Loading state */}
+                  {foodRecLoading && (
+                    <div style={{ textAlign: "center", padding: "20px 0" }}>
+                      <div style={{ fontSize: 48, marginBottom: 10, animation: "pulse 1.5s infinite" }}>🧑‍🍳</div>
+                      <div style={{ fontWeight: 800, color: "#a78bfa" }}>AI Ahli Gizi Sedang Bekerja...</div>
+                      <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>Mencari makanan sesuai budget & nutrisimu</div>
+                    </div>
+                  )}
+
+                  {/* FOOD REC RESULT */}
+                  {foodRecResult && !foodRecResult.error && (
+                    <div style={{ animation: "fadeIn 0.4s ease" }}>
+                      <div style={{ background: "#0d1a0d", borderRadius: 12, padding: 10, marginBottom: 12, border: "1px solid #4ade8033" }}>
+                        <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 800 }}>✅ {foodRecResult.summary}</div>
+                      </div>
+
+                      {foodRecResult.recommendations?.map((rec, i) => (
+                        <div key={i} style={{ background: "#252840", borderRadius: 14, padding: 14, marginBottom: 10, border: "1px solid #333660" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 900, fontSize: 15 }}>{rec.name}</div>
+                              <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{rec.description}</div>
+                            </div>
+                            <span className="badge" style={{ background: "#1a3a2a", color: "#4ade80", marginLeft: 8, whiteSpace: "nowrap" }}>{rec.price_estimate}</span>
+                          </div>
+
+                          {/* Makro grid */}
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
+                            {[
+                              { label: "Kalori", val: rec.cal, unit: "kkal", color: "#4ade80" },
+                              { label: "Protein", val: rec.protein + "g", unit: "", color: "#22d3ee" },
+                              { label: "Karbo", val: rec.carb + "g", unit: "", color: "#fbbf24" },
+                              { label: "Lemak", val: rec.fat + "g", unit: "", color: "#f87171" },
+                            ].map(m => (
+                              <div key={m.label} style={{ background: "#1a1d2e", borderRadius: 8, padding: 6, textAlign: "center" }}>
+                                <div style={{ fontWeight: 900, fontSize: 12, color: m.color }}>{m.val}</div>
+                                <div style={{ fontSize: 9, color: "#555" }}>{m.label}</div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                            <span className="badge" style={{ background: "#1a1d2e", color: "#888", fontSize: 10 }}>📍 {rec.where_to_get}</span>
+                          </div>
+
+                          <div style={{ fontSize: 11, color: "#22d3ee", marginBottom: 4 }}>💚 {rec.why}</div>
+                          <div style={{ fontSize: 11, color: "#fbbf24" }}>💡 {rec.tips}</div>
+
+                          {/* Tombol tambah ke log */}
+                          <button
+                            onClick={() => { addFood({ name: rec.name, cal: rec.cal, protein: rec.protein, carb: rec.carb, fat: rec.fat }); }}
+                            style={{ width: "100%", marginTop: 10, padding: "8px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #4ade80, #22c55e)", color: "#0f1117", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 12 }}>
+                            + Tambah ke Log Hari Ini
+                          </button>
+                        </div>
+                      ))}
+
+                      {foodRecResult.additional_tips && (
+                        <div style={{ background: "#0d1f2d", borderRadius: 10, padding: 10, marginBottom: 10, border: "1px solid #22d3ee33" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: "#22d3ee", marginBottom: 4 }}>📌 Tips Tambahan</div>
+                          <div style={{ fontSize: 12, color: "#aaa" }}>{foodRecResult.additional_tips}</div>
+                        </div>
+                      )}
+                      {foodRecResult.warning && (
+                        <div style={{ background: "#2d1515", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: "#f87171", marginBottom: 4 }}>⚠️ Perhatian</div>
+                          <div style={{ fontSize: 12, color: "#ccc" }}>{foodRecResult.warning}</div>
+                        </div>
+                      )}
+                      <button onClick={() => { setFoodRecResult(null); setFoodRecQuery(""); }} className="btn-outline" style={{ width: "100%" }}>
+                        🔄 Cari Makanan Lain
+                      </button>
+                    </div>
+                  )}
+
+                  {foodRecResult?.error && (
+                    <div style={{ textAlign: "center", padding: "16px 0" }}>
+                      <div style={{ fontSize: 36, marginBottom: 8 }}>😕</div>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Gagal Mendapatkan Rekomendasi</div>
+                      <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>{foodRecResult.message}</div>
+                      <button className="btn-green" onClick={() => setFoodRecResult(null)}>Coba Lagi</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* ===== END AI FOOD RECOMMENDATION MODAL ===== */}
+
             {/* ===== PHOTO SCAN MODAL ===== */}
             {showPhotoScan && (
               <div style={{ position: "fixed", inset: 0, background: "#000000cc", zIndex: 999, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
@@ -788,6 +1059,9 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <span style={{ fontWeight: 800 }}>🍽️ Tambah Makanan</span>
                 <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ background: "linear-gradient(135deg, #a78bfa, #22d3ee)", color: "#0f1117", border: "none", borderRadius: 10, padding: "7px 10px", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }} onClick={() => setShowFoodRec(true)}>
+                    🤖 AI Rekom
+                  </button>
                   <button style={{ background: "linear-gradient(135deg, #22d3ee, #4ade80)", color: "#0f1117", border: "none", borderRadius: 10, padding: "7px 12px", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }} onClick={() => setShowPhotoScan(true)}>
                     📸 Scan Foto
                   </button>
@@ -925,8 +1199,8 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
 
             {/* Sub-tab */}
             <div style={{ display: "flex", gap: 6, marginBottom: 12, background: "#1a1d2e", borderRadius: 12, padding: 4 }}>
-              {[["hari","💪 Hari Ini"],["kalori","🔥 Kalori Bakar"],["panduan","📖 Panduan"]].map(([t,l]) => (
-                <button key={t} onClick={() => setWorkoutSubTab(t)} style={{ flex: 1, padding: "8px 4px", borderRadius: 9, border: "none", background: workoutSubTab === t ? "#4ade80" : "transparent", color: workoutSubTab === t ? "#0f1117" : "#888", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 12, transition: "all 0.2s" }}>{l}</button>
+              {[["hari","💪 Hari Ini"],["kalori","🔥 Kalori Bakar"],["panduan","📖 Panduan"],["ai","🤖 AI Coach"]].map(([t,l]) => (
+                <button key={t} onClick={() => setWorkoutSubTab(t)} style={{ flex: 1, padding: "8px 2px", borderRadius: 9, border: "none", background: workoutSubTab === t ? (t === "ai" ? "linear-gradient(135deg,#a78bfa,#22d3ee)" : "#4ade80") : "transparent", color: workoutSubTab === t ? "#0f1117" : "#888", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 11, transition: "all 0.2s" }}>{l}</button>
               ))}
             </div>
 
@@ -1080,7 +1354,137 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
               </>
             )}
 
-            {/* ── SUB-TAB: PANDUAN ── */}
+            {/* ── SUB-TAB: AI COACH ── */}
+            {workoutSubTab === "ai" && (
+              <>
+                <div className="card" style={{ marginBottom: 12, background: "linear-gradient(135deg, #1a0d2e, #0d1a2e)", border: "1px solid #a78bfa44" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 28 }}>🤖</div>
+                    <div>
+                      <div style={{ fontWeight: 900, fontSize: 15, background: "linear-gradient(135deg,#a78bfa,#22d3ee)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>AI Workout Coach</div>
+                      <div style={{ fontSize: 11, color: "#888" }}>Tanya program olahraga apapun, AI buatkan untukmu</div>
+                    </div>
+                  </div>
+                  <textarea
+                    className="input-dark"
+                    placeholder="Contoh: 'Gerakan yang bisa membakar 300 kalori di rumah' atau 'Latihan tercepat untuk membentuk otot perut'"
+                    value={workoutRecQuery}
+                    onChange={e => setWorkoutRecQuery(e.target.value)}
+                    rows={3}
+                    style={{ resize: "none", marginBottom: 8, fontSize: 13 }}
+                  />
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                    {workoutRecSuggestions.map((s, i) => (
+                      <button key={i} onClick={() => setWorkoutRecQuery(s)}
+                        style={{ padding: "5px 10px", borderRadius: 99, border: "1px solid #a78bfa44", background: "#1a0d2e", color: "#a78bfa", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "'Nunito', sans-serif" }}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={getAIWorkoutRec}
+                    disabled={!workoutRecQuery.trim() || workoutRecLoading}
+                    style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: workoutRecQuery.trim() && !workoutRecLoading ? "linear-gradient(135deg,#a78bfa,#22d3ee)" : "#252840", color: workoutRecQuery.trim() && !workoutRecLoading ? "#0f1117" : "#555", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: workoutRecQuery.trim() && !workoutRecLoading ? "pointer" : "not-allowed", fontSize: 14, transition: "all 0.2s" }}>
+                    {workoutRecLoading ? "⏳ AI sedang merancang program..." : "🚀 Dapatkan Program Olahraga"}
+                  </button>
+                </div>
+
+                {/* AI WORKOUT RESULT */}
+                {workoutRecLoading && (
+                  <div className="card" style={{ textAlign: "center", padding: "28px 16px" }}>
+                    <div style={{ fontSize: 48, marginBottom: 12, animation: "pulse 1.5s infinite" }}>🏋️</div>
+                    <div style={{ fontWeight: 800, color: "#a78bfa", marginBottom: 6 }}>AI Coach Merancang Program...</div>
+                    <div style={{ fontSize: 12, color: "#666" }}>Menghitung kalori bakar, memilih gerakan optimal untukmu</div>
+                  </div>
+                )}
+
+                {workoutRecResult && !workoutRecResult.error && (
+                  <div style={{ animation: "fadeIn 0.4s ease" }}>
+                    {/* Header ringkasan */}
+                    <div className="card" style={{ marginBottom: 12, background: "linear-gradient(135deg, #1a0d2e, #0d1a2e)", border: "1px solid #a78bfa55" }}>
+                      <div style={{ fontWeight: 900, fontSize: 14, color: "#a78bfa", marginBottom: 8 }}>🏆 {workoutRecResult.summary}</div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        {[
+                          { label: "Total Bakar", val: `${workoutRecResult.total_cal_burn} kkal`, color: "#f87171", icon: "🔥" },
+                          { label: "Durasi", val: `${workoutRecResult.total_duration_minutes} mnt`, color: "#22d3ee", icon: "⏱️" },
+                          { label: "Level", val: workoutRecResult.difficulty, color: "#fbbf24", icon: "💪" },
+                        ].map(s => (
+                          <div key={s.label} className="stat-mini" style={{ padding: 8 }}>
+                            <div style={{ fontSize: 14 }}>{s.icon}</div>
+                            <div style={{ fontWeight: 900, fontSize: 13, color: s.color, marginTop: 2 }}>{s.val}</div>
+                            <div style={{ fontSize: 9, color: "#666", marginTop: 1 }}>{s.label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Daftar gerakan */}
+                    <div className="card" style={{ marginBottom: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 12, color: "#e8eaf0" }}>📋 Program Gerakan</div>
+                      {workoutRecResult.exercises?.map((ex, i) => (
+                        <div key={i} style={{ background: "#252840", borderRadius: 12, padding: 12, marginBottom: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                            <div style={{ fontSize: 28 }}>{ex.icon}</div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 800, fontSize: 14 }}>{ex.name}</div>
+                              <div style={{ fontSize: 11, color: "#888" }}>{ex.sets}</div>
+                            </div>
+                            <div style={{ textAlign: "right" }}>
+                              <div style={{ fontWeight: 900, fontSize: 14, color: "#f87171" }}>🔥 {ex.cal_burn} kkal</div>
+                              <div style={{ fontSize: 10, color: "#fbbf24" }}>🫧 {ex.fat_burn_g}g lemak</div>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                            <span className="badge" style={{ background: "#1a3a2a", color: "#4ade80" }}>💪 {ex.muscle_target}</span>
+                          </div>
+                          <div style={{ fontSize: 11, color: "#aaa", marginBottom: ex.beginner_mod ? 4 : 0 }}>📝 {ex.technique}</div>
+                          {ex.beginner_mod && (
+                            <div style={{ fontSize: 11, color: "#fbbf24", background: "#2d1f00", borderRadius: 6, padding: "4px 8px", marginTop: 4 }}>
+                              🌱 Pemula: {ex.beginner_mod}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Tips tambahan */}
+                    <div className="card" style={{ marginBottom: 12 }}>
+                      <div style={{ fontWeight: 800, marginBottom: 10 }}>💡 Tips dari AI Coach</div>
+                      {[
+                        { icon: "📅", label: "Jadwal", val: workoutRecResult.schedule_suggestion, color: "#22d3ee" },
+                        { icon: "🔄", label: "Recovery", val: workoutRecResult.recovery_tips, color: "#4ade80" },
+                        { icon: "🥗", label: "Nutrisi", val: workoutRecResult.nutrition_tips, color: "#fbbf24" },
+                      ].map(t => t.val && (
+                        <div key={t.label} style={{ background: "#252840", borderRadius: 10, padding: 10, marginBottom: 6, borderLeft: `3px solid ${t.color}` }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: t.color, marginBottom: 2 }}>{t.icon} {t.label}</div>
+                          <div style={{ fontSize: 12, color: "#ccc" }}>{t.val}</div>
+                        </div>
+                      ))}
+                      {workoutRecResult.warning && (
+                        <div style={{ background: "#2d1515", borderRadius: 10, padding: 10, borderLeft: "3px solid #f87171" }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: "#f87171", marginBottom: 2 }}>⚠️ Perhatian</div>
+                          <div style={{ fontSize: 12, color: "#ccc" }}>{workoutRecResult.warning}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    <button onClick={() => { setWorkoutRecResult(null); setWorkoutRecQuery(""); }}
+                      className="btn-outline" style={{ width: "100%", marginBottom: 12 }}>
+                      🔄 Coba Permintaan Lain
+                    </button>
+                  </div>
+                )}
+
+                {workoutRecResult?.error && (
+                  <div className="card" style={{ textAlign: "center", border: "1px solid #f8717144" }}>
+                    <div style={{ fontSize: 36, marginBottom: 8 }}>😕</div>
+                    <div style={{ fontWeight: 800, marginBottom: 4 }}>Gagal Mendapatkan Rekomendasi</div>
+                    <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>{workoutRecResult.message}</div>
+                    <button className="btn-green" onClick={() => setWorkoutRecResult(null)}>Coba Lagi</button>
+                  </div>
+                )}
+              </>
+            )}
             {workoutSubTab === "panduan" && (
               <>
                 <div className="card" style={{ marginBottom: 12, border: "1px solid #4ade8033" }}>
