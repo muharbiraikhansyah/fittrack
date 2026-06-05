@@ -128,6 +128,14 @@ export default function HealthTracker() {
   const [scanMediaType, setScanMediaType] = useState("image/jpeg");
   const [scanPortions, setScanPortions] = useState(1);
 
+  // === HISTORY MAKANAN DARI SCAN AI ===
+  const [scanHistory, setScanHistory] = useState([]); // [{id, name, cal, protein, carb, fat, scannedAt, emoji}]
+  const [showScanHistory, setShowScanHistory] = useState(false);
+
+  // === WORKOUT KALORI BAKAR ===
+  const [workoutSubTab, setWorkoutSubTab] = useState("hari"); // hari | kalori | panduan
+  const [workoutCalBurned, setWorkoutCalBurned] = useState(0); // kkal bakar manual input
+
   function handleImageUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -238,13 +246,34 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
 
   function confirmScanFood() {
     if (!scanResult || scanResult.error) return;
-    addFood({
+    const foodItem = {
       name: scanPortions !== 1 ? `${scanResult.foodName} (${scanPortions}x)` : scanResult.foodName,
       cal: Math.round(scanResult.cal * scanPortions),
       protein: parseFloat((scanResult.protein * scanPortions).toFixed(1)),
       carb: parseFloat((scanResult.carb * scanPortions).toFixed(1)),
       fat: parseFloat((scanResult.fat * scanPortions).toFixed(1)),
-    });
+    };
+    addFood(foodItem);
+
+    // Simpan ke history scan AI (jika belum ada nama yang sama)
+    const baseFood = {
+      id: Date.now(),
+      name: scanResult.foodName,
+      cal: Math.round(scanResult.cal),
+      protein: parseFloat(scanResult.protein.toFixed(1)),
+      carb: parseFloat(scanResult.carb.toFixed(1)),
+      fat: parseFloat(scanResult.fat.toFixed(1)),
+      scannedAt: new Date().toLocaleDateString("id-ID"),
+      emoji: "📸",
+      confidence: scanResult.confidence,
+    };
+    const alreadyExists = scanHistory.some(h => h.name.toLowerCase() === baseFood.name.toLowerCase());
+    if (!alreadyExists) {
+      const newHistory = [baseFood, ...scanHistory].slice(0, 30); // maks 30 item
+      setScanHistory(newHistory);
+      try { localStorage.setItem("ht_scan_history", JSON.stringify(newHistory)); } catch {}
+    }
+
     setShowPhotoScan(false);
     setScanStep("upload");
     setScanImage(null);
@@ -270,9 +299,11 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
       const s = JSON.parse(localStorage.getItem("ht_data") || "{}");
       const w = JSON.parse(localStorage.getItem("ht_weights") || "{}");
       const p = JSON.parse(localStorage.getItem("ht_profile") || "null");
+      const sh = JSON.parse(localStorage.getItem("ht_scan_history") || "[]");
       setStorage(s);
       setWeights(w);
       if (p) setProfile(p);
+      setScanHistory(sh);
     } catch {}
   }, []);
 
@@ -760,11 +791,41 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
                   <button style={{ background: "linear-gradient(135deg, #22d3ee, #4ade80)", color: "#0f1117", border: "none", borderRadius: 10, padding: "7px 12px", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }} onClick={() => setShowPhotoScan(true)}>
                     📸 Scan Foto
                   </button>
+                  {scanHistory.length > 0 && (
+                    <button className="btn-outline" style={{ fontSize: 12, borderColor: "#a78bfa", color: "#a78bfa" }} onClick={() => setShowScanHistory(!showScanHistory)}>
+                      🕐 Riwayat ({scanHistory.length})
+                    </button>
+                  )}
                   <button className="btn-outline" style={{ fontSize: 12 }} onClick={() => setShowCustom(!showCustom)}>
                     {showCustom ? "Tutup" : "+ Custom"}
                   </button>
                 </div>
               </div>
+
+              {/* SCAN HISTORY */}
+              {showScanHistory && scanHistory.length > 0 && (
+                <div style={{ background: "#0f1117", borderRadius: 12, padding: 12, marginBottom: 10, border: "1px solid #a78bfa44" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: "#a78bfa" }}>📸 Riwayat Makanan dari Scan AI</div>
+                    <button onClick={() => { if(window.confirm("Hapus semua riwayat scan?")){ setScanHistory([]); localStorage.removeItem("ht_scan_history"); } }} style={{ background: "none", border: "none", color: "#f87171", fontSize: 11, cursor: "pointer", fontFamily: "'Nunito', sans-serif" }}>Hapus Semua</button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#666", marginBottom: 8 }}>Tap untuk langsung tambah ke log hari ini tanpa perlu foto ulang</div>
+                  {scanHistory.map(h => (
+                    <div key={h.id} style={{ background: "#1a1d2e", borderRadius: 10, padding: "10px 12px", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ fontSize: 22 }}>📸</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{h.name}</div>
+                        <div style={{ fontSize: 11, color: "#666" }}>P:{h.protein}g  K:{h.carb}g  L:{h.fat}g • scan {h.scannedAt}</div>
+                        {h.confidence && <div style={{ fontSize: 10, color: "#a78bfa" }}>AI confidence: {h.confidence}%</div>}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                        <span style={{ background: "#1a3a2a", color: "#4ade80", padding: "2px 8px", borderRadius: 99, fontSize: 12, fontWeight: 800 }}>{h.cal} kkal</span>
+                        <button onClick={() => addFood({ ...h, id: Date.now() })} style={{ background: "linear-gradient(135deg,#4ade80,#22c55e)", color: "#0f1117", border: "none", borderRadius: 8, padding: "4px 10px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "'Nunito', sans-serif" }}>+ Tambah</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <input className="input-dark" placeholder="🔍 Cari makanan... (contoh: nasi, telur)" value={foodSearch} onChange={e => setFoodSearch(e.target.value)} style={{ marginBottom: 8 }} />
 
               {showCustom && (
@@ -861,52 +922,254 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
         {/* OLAHRAGA TAB */}
         {activeTab === "olahraga" && (
           <div style={{ animation: "fadeIn 0.3s ease" }}>
-            <div className="card" style={{ marginBottom: 12, border: workout.type === "rest" ? "1px solid #333" : "1px solid #4ade8044" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-                <div>
-                  <div style={{ fontSize: 36 }}>{workout.icon}</div>
-                  <div style={{ fontWeight: 900, fontSize: 18, marginTop: 6 }}>{workout.label}</div>
-                  <div style={{ fontSize: 13, color: "#888" }}>{DAYS[dayOfWeek]} • {workout.duration}</div>
-                </div>
-                <button className={dayData.workoutDone ? "btn-green" : "btn-outline"} onClick={toggleWorkout}>
-                  {dayData.workoutDone ? "✓ Selesai!" : "Tandai Selesai"}
-                </button>
-              </div>
-              {dayData.workoutDone && (
-                <div style={{ background: "#1a3a2a", borderRadius: 10, padding: 10, fontSize: 13, color: "#4ade80", fontWeight: 700, textAlign: "center" }}>
-                  🎉 Keren! Olahraga hari ini sudah selesai!
-                </div>
-              )}
-            </div>
 
-            <div className="card" style={{ marginBottom: 12 }}>
-              <div style={{ fontWeight: 800, marginBottom: 12 }}>📋 Gerakan Hari Ini</div>
-              {workout.exercises.map((ex, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < workout.exercises.length - 1 ? "1px solid #252840" : "none" }}>
-                  <div style={{ width: 28, height: 28, borderRadius: 99, background: "#1a3a2a", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 900, color: "#4ade80", flexShrink: 0 }}>{i + 1}</div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{ex}</div>
-                </div>
+            {/* Sub-tab */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, background: "#1a1d2e", borderRadius: 12, padding: 4 }}>
+              {[["hari","💪 Hari Ini"],["kalori","🔥 Kalori Bakar"],["panduan","📖 Panduan"]].map(([t,l]) => (
+                <button key={t} onClick={() => setWorkoutSubTab(t)} style={{ flex: 1, padding: "8px 4px", borderRadius: 9, border: "none", background: workoutSubTab === t ? "#4ade80" : "transparent", color: workoutSubTab === t ? "#0f1117" : "#888", fontFamily: "'Nunito', sans-serif", fontWeight: 800, cursor: "pointer", fontSize: 12, transition: "all 0.2s" }}>{l}</button>
               ))}
             </div>
 
-            <div className="card">
-              <div style={{ fontWeight: 800, marginBottom: 12 }}>📅 Jadwal Olahraga Mingguan</div>
-              {Object.entries(WORKOUT_SCHEDULE).map(([day, w]) => {
-                const d = parseInt(day);
-                const isToday = dayOfWeek === d && dateKey === todayKey;
-                return (
-                  <div key={day} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", marginBottom: 4, borderRadius: 10, background: isToday ? "#1a3a2a" : "transparent" }}>
-                    <div style={{ width: 40, fontSize: 12, color: isToday ? "#4ade80" : "#888", fontWeight: isToday ? 800 : 600 }}>{DAYS[d].slice(0,3)}</div>
-                    <div style={{ fontSize: 20 }}>{w.icon}</div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 700, fontSize: 13 }}>{w.label}</div>
-                      <div style={{ fontSize: 11, color: "#888" }}>{w.duration}</div>
+            {/* ── SUB-TAB: HARI INI ── */}
+            {workoutSubTab === "hari" && (
+              <>
+                <div className="card" style={{ marginBottom: 12, border: workout.type === "rest" ? "1px solid #333" : "1px solid #4ade8044" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 36 }}>{workout.icon}</div>
+                      <div style={{ fontWeight: 900, fontSize: 18, marginTop: 6 }}>{workout.label}</div>
+                      <div style={{ fontSize: 13, color: "#888" }}>{DAYS[dayOfWeek]} • {workout.duration}</div>
+                      <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
+                        <span className="badge" style={{ background: "#f8717122", color: "#f87171" }}>🔥 ~{WORKOUT_BURN[workout.type]} kkal bakar</span>
+                      </div>
                     </div>
-                    {isToday && <span className="badge" style={{ background: "#4ade8033", color: "#4ade80" }}>Hari Ini</span>}
+                    <button className={dayData.workoutDone ? "btn-green" : "btn-outline"} onClick={toggleWorkout}>
+                      {dayData.workoutDone ? "✓ Selesai!" : "Tandai Selesai"}
+                    </button>
                   </div>
-                );
-              })}
-            </div>
+                  {dayData.workoutDone && (
+                    <div style={{ background: "#1a3a2a", borderRadius: 10, padding: 10, fontSize: 13, color: "#4ade80", fontWeight: 700, textAlign: "center" }}>
+                      🎉 Keren! Sudah bakar ~{WORKOUT_BURN[workout.type]} kkal hari ini!
+                    </div>
+                  )}
+                </div>
+
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 12 }}>📋 Gerakan Hari Ini</div>
+                  {workout.exercises.map((ex, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < workout.exercises.length - 1 ? "1px solid #252840" : "none" }}>
+                      <div style={{ width: 28, height: 28, borderRadius: 99, background: "#1a3a2a", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 900, color: "#4ade80", flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{ex}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="card">
+                  <div style={{ fontWeight: 800, marginBottom: 12 }}>📅 Jadwal Olahraga Mingguan</div>
+                  {Object.entries(WORKOUT_SCHEDULE).map(([day, w]) => {
+                    const d = parseInt(day);
+                    const isToday = dayOfWeek === d && dateKey === todayKey;
+                    return (
+                      <div key={day} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", marginBottom: 4, borderRadius: 10, background: isToday ? "#1a3a2a" : "transparent" }}>
+                        <div style={{ width: 40, fontSize: 12, color: isToday ? "#4ade80" : "#888", fontWeight: isToday ? 800 : 600 }}>{DAYS[d].slice(0,3)}</div>
+                        <div style={{ fontSize: 20 }}>{w.icon}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{w.label}</div>
+                          <div style={{ fontSize: 11, color: "#888" }}>{w.duration}</div>
+                        </div>
+                        <span style={{ fontSize: 11, color: "#f87171", fontWeight: 700 }}>~{WORKOUT_BURN[w.type]} kkal</span>
+                        {isToday && <span className="badge" style={{ background: "#4ade8033", color: "#4ade80" }}>Hari Ini</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* ── SUB-TAB: KALORI BAKAR ── */}
+            {workoutSubTab === "kalori" && (
+              <>
+                {/* Ringkasan kalori bakar hari ini */}
+                <div className="card" style={{ marginBottom: 12, background: "linear-gradient(135deg, #1a1200, #1a1d2e)", border: "1px solid #fbbf2433" }}>
+                  <div style={{ fontWeight: 800, marginBottom: 12, color: "#fbbf24" }}>🔥 Kalori Bakar Hari Ini</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    {[
+                      { label: "Bakar Olahraga", val: dayData.workoutDone ? WORKOUT_BURN[workout.type] : 0, color: "#f87171", icon: "💪" },
+                      { label: "BMR Harian", val: profile ? Math.round(calcBMR(profile.gender, profile.weight, profile.height, profile.age)) : 1400, color: "#fbbf24", icon: "❤️" },
+                      { label: "Total Bakar", val: (dayData.workoutDone ? WORKOUT_BURN[workout.type] : 0) + (profile ? Math.round(calcBMR(profile.gender, profile.weight, profile.height, profile.age)) : 1400), color: "#4ade80", icon: "⚡" },
+                    ].map(s => (
+                      <div key={s.label} className="stat-mini" style={{ padding: 10 }}>
+                        <div style={{ fontSize: 16 }}>{s.icon}</div>
+                        <div style={{ fontWeight: 900, fontSize: 16, color: s.color, marginTop: 2 }}>{s.val}</div>
+                        <div style={{ fontSize: 9, color: "#666", marginTop: 2 }}>{s.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Neraca kalori */}
+                  {(() => {
+                    const totalBurn = (dayData.workoutDone ? WORKOUT_BURN[workout.type] : 0) + (profile ? Math.round(calcBMR(profile.gender, profile.weight, profile.height, profile.age)) : 1400);
+                    const totalCal_ = dayData.foods.reduce((s,f) => s+f.cal, 0);
+                    const neraca = totalCal_ - totalBurn;
+                    return (
+                      <div style={{ background: neraca < 0 ? "#1a3a2a" : "#2d1515", borderRadius: 10, padding: 10, textAlign: "center" }}>
+                        <div style={{ fontSize: 12, color: "#888", marginBottom: 2 }}>Neraca Kalori Hari Ini</div>
+                        <div style={{ fontWeight: 900, fontSize: 22, color: neraca < 0 ? "#4ade80" : "#f87171" }}>
+                          {neraca < 0 ? "" : "+"}{neraca} kkal
+                        </div>
+                        <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+                          {neraca < 0 ? "✅ Defisit — bagus untuk turun berat!" : neraca === 0 ? "⚖️ Seimbang" : "⚠️ Surplus — bisa nambah berat"}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Estimasi kalori per gerakan */}
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>⚡ Estimasi Kalori per Gerakan</div>
+                  <div style={{ fontSize: 11, color: "#666", marginBottom: 12 }}>Berdasarkan berat badan {profile?.weight || 70} kg selama 1 set</div>
+                  {[
+                    { name: "Squat", icon: "🦵", sets: "3×15", cal: 8, muscle: "Paha, Bokong, Core" },
+                    { name: "Push-up", icon: "💪", sets: "3×12", cal: 7, muscle: "Dada, Trisep, Bahu" },
+                    { name: "Plank", icon: "🧱", sets: "3×30 dtk", cal: 3, muscle: "Core, Perut" },
+                    { name: "Jumping Jack", icon: "⭐", sets: "3×30", cal: 10, muscle: "Full body, Cardio" },
+                    { name: "Burpees", icon: "🔥", sets: "3×10", cal: 15, muscle: "Full body, Paling efektif" },
+                    { name: "Lunges", icon: "🚶", sets: "3×12", cal: 9, muscle: "Paha depan, Betis" },
+                    { name: "Mountain Climbers", icon: "🏔️", sets: "3×20", cal: 12, muscle: "Core, Bahu, Cardio" },
+                    { name: "High Knees", icon: "🏃", sets: "3×30", cal: 13, muscle: "Kaki, Cardio" },
+                    { name: "Sit-up", icon: "🪑", sets: "3×20", cal: 5, muscle: "Perut atas & bawah" },
+                    { name: "Glute Bridge", icon: "🌉", sets: "3×15", cal: 4, muscle: "Bokong, Hamstring" },
+                    { name: "Jogging (10 mnt)", icon: "🏃", sets: "1×10 mnt", cal: 80, muscle: "Full body, Kardio" },
+                    { name: "Jalan Cepat (30 mnt)", icon: "🚶", sets: "1×30 mnt", cal: 120, muscle: "Cardio, Kaki" },
+                  ].map((ex, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i < 11 ? "1px solid #1f2235" : "none" }}>
+                      <div style={{ fontSize: 20, width: 28, textAlign: "center" }}>{ex.icon}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{ex.name}</div>
+                        <div style={{ fontSize: 11, color: "#666" }}>{ex.sets} • {ex.muscle}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 900, fontSize: 14, color: "#f87171" }}>~{ex.cal}</div>
+                        <div style={{ fontSize: 9, color: "#555" }}>kkal</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Target kalori bakar per tujuan */}
+                <div className="card">
+                  <div style={{ fontWeight: 800, marginBottom: 12 }}>🎯 Target Kalori Bakar per Tujuan</div>
+                  {[
+                    { goal: "Turun Berat Badan", icon: "⬇️", target: "300–500 kkal/sesi", color: "#4ade80", tips: "Fokus cardio + defisit kalori makan. Olahraga 4–5x/minggu.", badge: "Kamu sekarang" },
+                    { goal: "Bugar & Sehat", icon: "💚", target: "200–350 kkal/sesi", color: "#22d3ee", tips: "Mix cardio & kekuatan. Olahraga 3–4x/minggu.", badge: "" },
+                    { goal: "Bentuk Otot", icon: "💪", target: "150–250 kkal/sesi", color: "#f87171", tips: "Fokus latihan beban/resistance. Kalori bakar lebih rendah tapi otot tumbuh.", badge: "" },
+                    { goal: "Atlet / Performa", icon: "🏆", target: "500–800 kkal/sesi", color: "#fbbf24", tips: "Latihan intensitas tinggi, perlu recovery lebih banyak.", badge: "" },
+                  ].map((g, i) => (
+                    <div key={i} style={{ background: "#252840", borderRadius: 12, padding: 12, marginBottom: 8, border: g.badge ? `1px solid ${g.color}44` : "1px solid transparent" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <div style={{ fontWeight: 800, fontSize: 14 }}>{g.icon} {g.goal}</div>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          {g.badge && <span className="badge" style={{ background: `${g.color}22`, color: g.color, fontSize: 9 }}>{g.badge}</span>}
+                          <span style={{ fontWeight: 900, fontSize: 13, color: g.color }}>{g.target}</span>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#888" }}>{g.tips}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* ── SUB-TAB: PANDUAN ── */}
+            {workoutSubTab === "panduan" && (
+              <>
+                <div className="card" style={{ marginBottom: 12, border: "1px solid #4ade8033" }}>
+                  <div style={{ fontWeight: 800, marginBottom: 12, color: "#4ade80" }}>🏆 Panduan Lengkap untuk Arbi</div>
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 12, lineHeight: 1.6 }}>
+                    Tinggi 161 cm, target turun dari 70 kg ke 57 kg dalam 1 tahun. Berikut panduan yang paling optimal:
+                  </div>
+                  {[
+                    {
+                      title: "🔥 Turun Berat Badan (Prioritas Utama)",
+                      color: "#4ade80",
+                      items: [
+                        "Defisit kalori 400–500 kkal/hari dari makan",
+                        "Cardio 3–4x/minggu (jogging, jumping jack, burpees)",
+                        "Target bakar min. 250 kkal per sesi olahraga",
+                        "Tidur 7–8 jam — hormon lemak diatur saat tidur",
+                        "Kurangi nasi putih, ganti nasi merah atau oat",
+                      ]
+                    },
+                    {
+                      title: "💪 Tetap Bugar & Punya Otot",
+                      color: "#22d3ee",
+                      items: [
+                        "Protein cukup: min. 1.6g × berat badan/hari",
+                        "Latihan resistance 2–3x/minggu (push-up, squat, plank)",
+                        "Jangan terlalu ekstrem defisit — otot bisa ikut hilang",
+                        "Pull-up & chin-up bagus untuk upper body (cari palang!)",
+                        "Istirahat otot 48 jam setelah latihan bagian yang sama",
+                      ]
+                    },
+                    {
+                      title: "❤️ Kesehatan Jantung & Stamina",
+                      color: "#f87171",
+                      items: [
+                        "Cardio zone 2 (napas agak ngos) 20–30 mnt, 3x/minggu",
+                        "Mulai dari jalan cepat 30 menit lalu tingkatkan ke jogging",
+                        "Jemur matahari pagi 10–15 mnt untuk vitamin D",
+                        "Minum air min. 2L/hari — penting untuk metabolisme",
+                        "Detak jantung target saat cardio: ~130–150 bpm",
+                      ]
+                    },
+                    {
+                      title: "🧠 Mental & Konsistensi",
+                      color: "#a78bfa",
+                      items: [
+                        "Ukur progress setiap Senin pagi sebelum makan",
+                        "Foto badan 2 minggu sekali — lebih motivasi dari timbangan",
+                        "Boleh 1 cheat meal per minggu asal tidak berlebihan",
+                        "Jika skip 1 hari, jangan patah semangat — lanjut besok",
+                        "Progress lambat tapi konsisten > sprint lalu berhenti",
+                      ]
+                    },
+                  ].map((section, si) => (
+                    <div key={si} style={{ marginBottom: 14 }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, color: section.color, marginBottom: 8 }}>{section.title}</div>
+                      {section.items.map((item, ii) => (
+                        <div key={ii} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "flex-start" }}>
+                          <div style={{ width: 18, height: 18, borderRadius: 99, background: `${section.color}22`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+                            <div style={{ width: 6, height: 6, borderRadius: 99, background: section.color }} />
+                          </div>
+                          <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.5 }}>{item}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Estimasi progress */}
+                <div className="card">
+                  <div style={{ fontWeight: 800, marginBottom: 12 }}>📅 Estimasi Progress Kalau Konsisten</div>
+                  {[
+                    { bulan: "Juni 2026", berat: "67–68 kg", ket: "Masa adaptasi, badan mulai terbiasa", status: "🟡" },
+                    { bulan: "Juli 2026", berat: "64–65 kg", ket: "Muka mulai tirus, baju mulai longgar", status: "🟡" },
+                    { bulan: "Agustus 2026", berat: "61–63 kg", ket: "Perubahan jelas terlihat 🎉", status: "🟢" },
+                    { bulan: "Oktober 2026", berat: "58–60 kg", ket: "Sudah masuk BMI normal", status: "🟢" },
+                    { bulan: "Januari 2027", berat: "55–58 kg", ket: "Target ideal tercapai! 🏆", status: "🏆" },
+                  ].map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 10, padding: "10px 0", borderBottom: i < 4 ? "1px solid #1f2235" : "none", alignItems: "center" }}>
+                      <div style={{ fontSize: 18 }}>{p.status}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{p.bulan}</div>
+                        <div style={{ fontSize: 11, color: "#666" }}>{p.ket}</div>
+                      </div>
+                      <div style={{ fontWeight: 900, fontSize: 14, color: "#4ade80" }}>{p.berat}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
