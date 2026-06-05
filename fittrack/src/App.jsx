@@ -319,27 +319,46 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     setScanPortions(1);
   }
 
-  async function callClaudeText(systemPrompt, userMessage, maxTokens = 2000) {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userMessage }],
-      }),
-    });
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err?.error?.message || `HTTP ${response.status}`);
+  async function callGeminiText(fullPrompt, maxTokens = 3000) {
+    const apiKey = import.meta.env.VITE_GEMINI_KEY;
+    if (!apiKey) throw new Error("API key Gemini belum diset di file .env (VITE_GEMINI_KEY)");
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: fullPrompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: maxTokens,
+              responseMimeType: "application/json",
+            },
+          }),
+        }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const clean = raw.replace(/```json|```/g, "").trim();
+        const jsonMatch = clean.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("AI tidak mengembalikan format JSON yang benar, coba lagi");
+        return JSON.parse(jsonMatch[0]);
+      }
+      let errMsg = `HTTP ${response.status}`;
+      try {
+        const errBody = await response.json();
+        errMsg = errBody?.error?.message || errMsg;
+      } catch {}
+      const isServerBusy = response.status === 503 || errMsg.toLowerCase().includes("overload") || errMsg.toLowerCase().includes("high demand");
+      if (isServerBusy && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, attempt * 3000));
+        continue;
+      }
+      throw new Error(errMsg);
     }
-    const data = await response.json();
-    const text = data.content.map(b => b.text || "").join("");
-    const clean = text.replace(/```json|```/g, "").trim();
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("Format respons tidak valid");
-    return JSON.parse(jsonMatch[0]);
   }
 
   async function getAIFoodRec() {
@@ -351,32 +370,15 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
         ? `Profil pengguna: ${profile.gender}, berat ${profile.weight}kg, tinggi ${profile.height}cm, usia ${profile.age} tahun, tujuan: ${profile.goal === "loss" ? "turun berat badan" : profile.goal === "gain" ? "naik berat badan" : "maintain"}, target kalori harian: ${CALORIE_TARGET} kkal, target protein: ${PROTEIN_TARGET}g.`
         : "Profil belum diisi.";
 
-      const result = await callClaudeText(
-        `Kamu adalah ahli gizi dan pakar makanan Indonesia. Berikan rekomendasi makanan yang SPESIFIK, REALISTIS, dan sesuai untuk Indonesia.
+      const fullFoodPrompt = `Kamu adalah ahli gizi dan pakar makanan Indonesia. Berikan rekomendasi makanan yang SPESIFIK, REALISTIS, dan sesuai untuk Indonesia.
 ${profileCtx}
-Balas HANYA JSON murni tanpa teks lain. Format:
-{
-  "summary": "ringkasan 1 kalimat",
-  "recommendations": [
-    {
-      "name": "nama makanan/menu",
-      "description": "deskripsi singkat cara penyajian",
-      "price_estimate": "estimasi harga mis. Rp 8.000-12.000",
-      "where_to_get": "warung/pasar/supermarket/buat sendiri",
-      "cal": 350,
-      "protein": 18.5,
-      "carb": 40,
-      "fat": 8,
-      "why": "alasan kenapa cocok untuk permintaan ini",
-      "tips": "tips praktis 1 kalimat"
-    }
-  ],
-  "additional_tips": "saran tambahan 1-2 kalimat",
-  "warning": "peringatan jika ada (kosong string jika tidak ada)"
-}
-Berikan 3-5 rekomendasi yang beragam. Gunakan data gizi standar Indonesia yang akurat.`,
-        `Permintaan pengguna: ${foodRecQuery}`
-      );
+Permintaan pengguna: ${foodRecQuery}
+
+INSTRUKSI: Balas HANYA JSON murni, tidak ada teks lain, tidak ada markdown, tidak ada penjelasan. Mulai langsung dari { dan akhiri dengan }.
+Format JSON yang harus dikembalikan:
+{"summary":"ringkasan 1 kalimat","recommendations":[{"name":"nama makanan/menu","description":"deskripsi singkat cara penyajian","price_estimate":"estimasi harga mis. Rp 8.000-12.000","where_to_get":"warung/pasar/supermarket/buat sendiri","cal":350,"protein":18.5,"carb":40,"fat":8,"why":"alasan kenapa cocok untuk permintaan ini","tips":"tips praktis 1 kalimat"}],"additional_tips":"saran tambahan 1-2 kalimat","warning":""}
+Berikan 3-5 rekomendasi. Gunakan data gizi standar Indonesia yang akurat. Harga dalam Rupiah Indonesia.`;
+      const result = await callGeminiText(fullFoodPrompt, 3000);
       setFoodRecResult(result);
     } catch (err) {
       setFoodRecResult({ error: true, message: err.message });
@@ -393,36 +395,16 @@ Berikan 3-5 rekomendasi yang beragam. Gunakan data gizi standar Indonesia yang a
         ? `Profil: ${profile.gender}, berat ${profile.weight}kg, tinggi ${profile.height}cm, usia ${profile.age} tahun, tujuan: ${profile.goal === "loss" ? "turun berat badan" : profile.goal === "gain" ? "naik berat badan" : "maintain"}.`
         : "Profil belum diisi, asumsikan orang dewasa umum.";
 
-      const result = await callClaudeText(
-        `Kamu adalah pelatih kebugaran profesional berpengalaman. Berikan rekomendasi olahraga/gerakan yang SPESIFIK, AMAN, dan REALISTIS untuk pemula-menengah tanpa alat khusus.
+      const fullWorkoutPrompt = `Kamu adalah pelatih kebugaran profesional berpengalaman. Berikan rekomendasi olahraga/gerakan yang SPESIFIK, AMAN, dan REALISTIS untuk pemula-menengah tanpa alat khusus.
 ${profileCtx}
-Balas HANYA JSON murni tanpa teks lain. Format:
-{
-  "summary": "ringkasan program 1 kalimat",
-  "total_cal_burn": 280,
-  "total_duration_minutes": 30,
-  "difficulty": "Pemula/Menengah/Lanjutan",
-  "exercises": [
-    {
-      "name": "nama gerakan",
-      "icon": "emoji relevan",
-      "sets": "mis. 3 set × 15 rep",
-      "duration_seconds": 60,
-      "cal_burn": 45,
-      "fat_burn_g": 1.2,
-      "muscle_target": "otot yang dilatih",
-      "technique": "teknik singkat 1 kalimat",
-      "beginner_mod": "modifikasi untuk pemula jika ada"
-    }
-  ],
-  "schedule_suggestion": "saran jadwal seminggu",
-  "recovery_tips": "tips pemulihan",
-  "nutrition_tips": "tips nutrisi pendukung",
-  "warning": "peringatan keamanan penting"
-}
-Berikan 4-6 gerakan. Estimasi kalori bakar berdasarkan berat badan ${profile?.weight || 65}kg.`,
-        `Permintaan pengguna: ${workoutRecQuery}`
-      );
+Permintaan pengguna: ${workoutRecQuery}
+Estimasi kalori bakar berdasarkan berat badan ${profile?.weight || 65}kg.
+
+INSTRUKSI: Balas HANYA JSON murni, tidak ada teks lain, tidak ada markdown, tidak ada penjelasan. Mulai langsung dari { dan akhiri dengan }.
+Format JSON yang harus dikembalikan:
+{"summary":"ringkasan program 1 kalimat","total_cal_burn":280,"total_duration_minutes":30,"difficulty":"Pemula","exercises":[{"name":"nama gerakan","icon":"🔥","sets":"3 set x 15 rep","duration_seconds":60,"cal_burn":45,"fat_burn_g":1.2,"muscle_target":"otot yang dilatih","technique":"teknik singkat 1 kalimat","beginner_mod":"modifikasi pemula"}],"schedule_suggestion":"saran jadwal seminggu","recovery_tips":"tips pemulihan","nutrition_tips":"tips nutrisi pendukung","warning":"peringatan keamanan"}
+Berikan 4-6 gerakan yang beragam.`;
+      const result = await callGeminiText(fullWorkoutPrompt, 3000);
       setWorkoutRecResult(result);
     } catch (err) {
       setWorkoutRecResult({ error: true, message: err.message });
