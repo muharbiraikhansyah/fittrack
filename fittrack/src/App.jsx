@@ -324,40 +324,58 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
     if (!apiKey) throw new Error("API key Gemini belum diset di file .env (VITE_GEMINI_KEY)");
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: fullPrompt }] }],
-            generationConfig: {
-              temperature: 0.2,
-              maxOutputTokens: maxTokens,
-              responseMimeType: "application/json",
-            },
-          }),
-        }
-      );
-      if (response.ok) {
-        const data = await response.json();
-        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        const clean = raw.replace(/```json|```/g, "").trim();
-        const jsonMatch = clean.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("AI tidak mengembalikan format JSON yang benar, coba lagi");
-        return JSON.parse(jsonMatch[0]);
-      }
-      let errMsg = `HTTP ${response.status}`;
+      let response;
       try {
-        const errBody = await response.json();
-        errMsg = errBody?.error?.message || errMsg;
-      } catch {}
-      const isServerBusy = response.status === 503 || errMsg.toLowerCase().includes("overload") || errMsg.toLowerCase().includes("high demand");
-      if (isServerBusy && attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, attempt * 3000));
-        continue;
+        response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: fullPrompt }] }],
+              generationConfig: { temperature: 0.1, maxOutputTokens: maxTokens },
+            }),
+          }
+        );
+      } catch (networkErr) {
+        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, attempt * 2000)); continue; }
+        throw new Error("Gagal koneksi ke server AI. Periksa koneksi internet.");
       }
-      throw new Error(errMsg);
+      if (!response.ok) {
+        let errMsg = `HTTP ${response.status}`;
+        try { const eb = await response.json(); errMsg = eb?.error?.message || errMsg; } catch {}
+        const retry = response.status === 503 || response.status === 429 || errMsg.toLowerCase().includes("overload");
+        if (retry && attempt < maxRetries) { await new Promise(r => setTimeout(r, attempt * 3000)); continue; }
+        throw new Error(errMsg);
+      }
+      const data = await response.json();
+      // Cek finish reason — jika SAFETY atau ERROR, coba lagi
+      const finishReason = data.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason !== "STOP" && finishReason !== "MAX_TOKENS") {
+        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1500)); continue; }
+        throw new Error(`AI berhenti karena: ${finishReason}. Coba ubah kata-kata permintaan.`);
+      }
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      if (!raw.trim()) {
+        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 1500)); continue; }
+        throw new Error("AI tidak memberikan respons. Coba lagi.");
+      }
+      // Ekstrak JSON — coba beberapa strategi parsing
+      const stripped = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+      // Strategi 1: langsung parse
+      try { return JSON.parse(stripped); } catch {}
+      // Strategi 2: ambil dari { sampai } terakhir
+      const start = stripped.indexOf("{");
+      const end = stripped.lastIndexOf("}");
+      if (start !== -1 && end !== -1 && end > start) {
+        try { return JSON.parse(stripped.slice(start, end + 1)); } catch {}
+      }
+      // Strategi 3: regex greedy
+      const m = stripped.match(/\{[\s\S]+\}/);
+      if (m) { try { return JSON.parse(m[0]); } catch {} }
+      // Semua strategi gagal — retry
+      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, 2000)); continue; }
+      throw new Error("Format respons AI tidak valid setelah beberapa percobaan. Coba lagi.");
     }
   }
 
@@ -370,14 +388,32 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
         ? `Profil pengguna: ${profile.gender}, berat ${profile.weight}kg, tinggi ${profile.height}cm, usia ${profile.age} tahun, tujuan: ${profile.goal === "loss" ? "turun berat badan" : profile.goal === "gain" ? "naik berat badan" : "maintain"}, target kalori harian: ${CALORIE_TARGET} kkal, target protein: ${PROTEIN_TARGET}g.`
         : "Profil belum diisi.";
 
-      const fullFoodPrompt = `Kamu adalah ahli gizi dan pakar makanan Indonesia. Berikan rekomendasi makanan yang SPESIFIK, REALISTIS, dan sesuai untuk Indonesia.
-${profileCtx}
-Permintaan pengguna: ${foodRecQuery}
+      const fullFoodPrompt = `Kamu ahli gizi Indonesia. Jawab permintaan berikut dengan JSON saja.
 
-INSTRUKSI: Balas HANYA JSON murni, tidak ada teks lain, tidak ada markdown, tidak ada penjelasan. Mulai langsung dari { dan akhiri dengan }.
-Format JSON yang harus dikembalikan:
-{"summary":"ringkasan 1 kalimat","recommendations":[{"name":"nama makanan/menu","description":"deskripsi singkat cara penyajian","price_estimate":"estimasi harga mis. Rp 8.000-12.000","where_to_get":"warung/pasar/supermarket/buat sendiri","cal":350,"protein":18.5,"carb":40,"fat":8,"why":"alasan kenapa cocok untuk permintaan ini","tips":"tips praktis 1 kalimat"}],"additional_tips":"saran tambahan 1-2 kalimat","warning":""}
-Berikan 3-5 rekomendasi. Gunakan data gizi standar Indonesia yang akurat. Harga dalam Rupiah Indonesia.`;
+${profileCtx}
+Permintaan: ${foodRecQuery}
+
+Balas HANYA dengan JSON valid berikut ini (jangan tambah teks apapun sebelum atau sesudah JSON):
+{
+  "summary": "ringkasan singkat",
+  "recommendations": [
+    {
+      "name": "Nama Makanan",
+      "description": "cara penyajian singkat",
+      "price_estimate": "Rp X.000 - Rp Y.000",
+      "where_to_get": "warung makan / pasar / buat sendiri",
+      "cal": 300,
+      "protein": 15,
+      "carb": 35,
+      "fat": 8,
+      "why": "alasan cocok",
+      "tips": "tips singkat"
+    }
+  ],
+  "additional_tips": "saran tambahan",
+  "warning": ""
+}
+Isi 3-4 rekomendasi nyata di Indonesia. Semua angka harus angka (bukan string). Harga dalam Rupiah.`;
       const result = await callGeminiText(fullFoodPrompt, 3000);
       setFoodRecResult(result);
     } catch (err) {
@@ -395,15 +431,37 @@ Berikan 3-5 rekomendasi. Gunakan data gizi standar Indonesia yang akurat. Harga 
         ? `Profil: ${profile.gender}, berat ${profile.weight}kg, tinggi ${profile.height}cm, usia ${profile.age} tahun, tujuan: ${profile.goal === "loss" ? "turun berat badan" : profile.goal === "gain" ? "naik berat badan" : "maintain"}.`
         : "Profil belum diisi, asumsikan orang dewasa umum.";
 
-      const fullWorkoutPrompt = `Kamu adalah pelatih kebugaran profesional berpengalaman. Berikan rekomendasi olahraga/gerakan yang SPESIFIK, AMAN, dan REALISTIS untuk pemula-menengah tanpa alat khusus.
-${profileCtx}
-Permintaan pengguna: ${workoutRecQuery}
-Estimasi kalori bakar berdasarkan berat badan ${profile?.weight || 65}kg.
+      const fullWorkoutPrompt = `Kamu pelatih olahraga profesional. Jawab permintaan berikut dengan JSON saja.
 
-INSTRUKSI: Balas HANYA JSON murni, tidak ada teks lain, tidak ada markdown, tidak ada penjelasan. Mulai langsung dari { dan akhiri dengan }.
-Format JSON yang harus dikembalikan:
-{"summary":"ringkasan program 1 kalimat","total_cal_burn":280,"total_duration_minutes":30,"difficulty":"Pemula","exercises":[{"name":"nama gerakan","icon":"🔥","sets":"3 set x 15 rep","duration_seconds":60,"cal_burn":45,"fat_burn_g":1.2,"muscle_target":"otot yang dilatih","technique":"teknik singkat 1 kalimat","beginner_mod":"modifikasi pemula"}],"schedule_suggestion":"saran jadwal seminggu","recovery_tips":"tips pemulihan","nutrition_tips":"tips nutrisi pendukung","warning":"peringatan keamanan"}
-Berikan 4-6 gerakan yang beragam.`;
+${profileCtx}
+Permintaan: ${workoutRecQuery}
+Berat badan referensi: ${profile?.weight || 65}kg.
+
+Balas HANYA dengan JSON valid berikut ini (jangan tambah teks apapun sebelum atau sesudah JSON):
+{
+  "summary": "ringkasan program",
+  "total_cal_burn": 250,
+  "total_duration_minutes": 30,
+  "difficulty": "Pemula",
+  "exercises": [
+    {
+      "name": "Nama Gerakan",
+      "icon": "💪",
+      "sets": "3 set x 15 rep",
+      "duration_seconds": 60,
+      "cal_burn": 40,
+      "fat_burn_g": 1.0,
+      "muscle_target": "nama otot",
+      "technique": "teknik singkat",
+      "beginner_mod": "modifikasi pemula atau kosong"
+    }
+  ],
+  "schedule_suggestion": "saran jadwal mingguan",
+  "recovery_tips": "tips recovery",
+  "nutrition_tips": "tips nutrisi",
+  "warning": "peringatan penting"
+}
+Isi 4-5 gerakan yang berbeda. Semua angka harus angka (bukan string).`;
       const result = await callGeminiText(fullWorkoutPrompt, 3000);
       setWorkoutRecResult(result);
     } catch (err) {
