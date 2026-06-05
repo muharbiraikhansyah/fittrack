@@ -182,7 +182,7 @@ export default function HealthTracker() {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -206,7 +206,6 @@ export default function HealthTracker() {
       const msg = err?.error?.message || `HTTP ${response.status}`;
       const isServerBusy = response.status === 503 || msg.toLowerCase().includes("high demand") || msg.toLowerCase().includes("overloaded");
       if (isServerBusy && attempt < maxRetries) {
-        // Tunggu makin lama tiap percobaan: 3s, 6s, 9s
         await new Promise(r => setTimeout(r, attempt * 3000));
         continue;
       }
@@ -326,7 +325,7 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
       let res;
       try {
         res = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey,
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -361,19 +360,14 @@ Format: {"detected":true,"confidence":85,"foodName":"nama makanan","portionEstim
         if (attempt < 3) { await new Promise(r => setTimeout(r, 1500)); continue; }
         throw new Error("AI tidak memberikan respons teks.");
       }
-      // Bersihkan markdown fence
       let cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
-      // Coba parse langsung
       try { return JSON.parse(cleaned); } catch {}
-      // Potong dari { pertama ke } terakhir
       const s = cleaned.indexOf("{");
       const e = cleaned.lastIndexOf("}");
       if (s !== -1 && e > s) {
         try { return JSON.parse(cleaned.slice(s, e + 1)); } catch {}
       }
-      // Retry jika masih bisa
       if (attempt < 3) { await new Promise(r => setTimeout(r, 2000)); continue; }
-      // Tampilkan 200 char pertama raw untuk debug
       throw new Error("Parsing gagal. Raw AI: " + raw.slice(0, 200));
     }
   }
